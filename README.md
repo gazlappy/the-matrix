@@ -9,6 +9,8 @@ It's an endless white room with two red leather wingback chairs and the old Deep
 - **Bullet time:** slow-motion bullets with trails, expanding rings and flying brass
 - **Code vision:** everything turns into green falling code
 - **Red pill / blue pill:** hold a pill to your mouth to take it
+- **Hands, not controllers:** your fingers follow the Touch controllers' trigger, grip and thumb sensors. Put the controllers down and Quest hand tracking takes over: make a fist or pinch to grab, curl your index finger to fire, and poke the wrist menu
+- **Real physics:** throws use your hand's actual speed and wrist flick, you can catch things in mid-air, and spent shell casings bounce, ring and can be picked up
 - **There is no spoon:** hold the spoon near your face and watch it bend
 
 ## Play it
@@ -38,6 +40,11 @@ To play on a Quest 3 over USB, plug the headset in and run `play-on-quest.bat`. 
 | Load guns | B | 1 |
 | Load agents | Wrist menu | 2 |
 | Wrist menu / reset | Y | R resets |
+| Throw / catch | Let go mid-swing / hold grip as it arrives | Click throws |
+
+With hand tracking, a fist or pinch grabs, curling your index finger fires, and you poke the wrist menu with your right index finger.
+
+To test VR on a desktop, open `index.html#emulate`. It runs Meta's IWER Quest 3 emulator.
 
 ## Credits
 
