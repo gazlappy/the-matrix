@@ -11,7 +11,11 @@ It's an endless white room with two red leather wingback chairs and the old Deep
 - **Red pill / blue pill:** hold a pill to your mouth to take it
 - **There is no spoon:** hold the spoon near your face and watch it bend
 
-## Run it
+## Play it
+
+**On Quest 3:** open **https://gazlappy.github.io/the-matrix/** in the Quest Browser and press **ENTER VR**. No cable needed.
+
+## Run it locally
 
 ```bash
 python -m http.server 8518
