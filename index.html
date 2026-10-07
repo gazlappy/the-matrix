@@ -70,6 +70,13 @@
     <p class="small">Gun models by austincford and PuKkBuMXDD (CC-BY 3.0, via Poly Pizza). Leather and walnut textures from Poly Haven (CC0). Full list in assets/CREDITS.md.</p>
   </div>
 </div>
+<div id="lost" class="overlay hidden">
+  <div class="card">
+    <h1>SIGNAL LOST</h1>
+    <p class="sub">The headset put the display to sleep. It should come back by itself in a moment.</p>
+    <div class="btns"><button id="reloadBtn">RELOAD THE CONSTRUCT</button></div>
+  </div>
+</div>
 <div id="crosshair" class="hidden"></div>
 <div id="hint"></div>
 <div id="status"></div>
@@ -744,8 +751,19 @@ function rackLayout(v) {
 // a flat picture of each layout's guns, used on every rack face that isn't right next to you
 const IMP_VARIANTS = 4;
 let impostorMats = null;
+let impostorRTs = [];
 function bakeImpostors() {
   if (impostorMats) return impostorMats;
+  impostorRTs = Array.from({ length: IMP_VARIANTS }, () => {
+    const rt = new THREE.WebGLRenderTarget(1024, 896, { samples: 4 });
+    rt.texture.colorSpace = THREE.SRGBColorSpace;
+    return rt;
+  });
+  impostorMats = impostorRTs.map(rt => new THREE.MeshBasicMaterial({ map: rt.texture, alphaTest: 0.5 }));
+  drawImpostors();
+  return impostorMats;
+}
+function drawImpostors() {
   const tmp = new THREE.Scene();
   tmp.environment = scene.environment;
   tmp.environmentIntensity = scene.environmentIntensity;
@@ -758,23 +776,18 @@ function bakeImpostors() {
   const xr = renderer.xr.enabled, clear = renderer.getClearColor(new THREE.Color()), alpha = renderer.getClearAlpha();
   renderer.xr.enabled = false;
   renderer.setClearColor(0x000000, 0);
-  impostorMats = [];
-  for (let v = 0; v < IMP_VARIANTS; v++) {
+  impostorRTs.forEach((rt, v) => {
     const g = new THREE.Group();
     for (const s of rackLayout(v)) { const o = makeGun(s.key); s.m.decompose(o.position, o.quaternion, o.scale); g.add(o); }
     tmp.add(g);
-    const rt = new THREE.WebGLRenderTarget(1024, 896, { samples: 4 });
-    rt.texture.colorSpace = THREE.SRGBColorSpace;
     renderer.setRenderTarget(rt);
     renderer.clear();
     renderer.render(tmp, cam);
     tmp.remove(g);
-    impostorMats.push(new THREE.MeshBasicMaterial({ map: rt.texture, alphaTest: 0.5 }));
-  }
+  });
   renderer.setRenderTarget(null);
   renderer.setClearColor(clear, alpha);
   renderer.xr.enabled = xr;
-  return impostorMats;
 }
 
 // ---- the endless armoury: a grid of racks around where you stood when you loaded it.
@@ -1071,7 +1084,11 @@ function holderMatrix(by, p, out) {
   if (by === 'cam') return out.copy(camera.matrixWorld);
   const h = hands[by];
   // guns sit in the hand like a real pistol grip (controller or tracked hand), so you aim down the barrel
-  if (p.kind === 'gun') return out.copy(h.grip.matrixWorld).multiply(GUN_IN_HAND);
+  if (p.kind === 'gun') {
+    // controller: barrel along the pointer, in the hand; tracked hand: along the index finger of the fist
+    if (h.mode === 'ctrl') { h.grip.getWorldPosition(_v); h.ray.getWorldQuaternion(_q); return out.compose(_v, _q, ONE); }
+    return out.copy(h.grip.matrixWorld).multiply(h.posed?.gunMatrix || GUN_IN_HAND);
+  }
   return out.copy(h.grip.matrixWorld);
 }
 function grab(p, by, near) {
@@ -1376,83 +1393,72 @@ const FINGERS = {
   ring: ['ring-finger-metacarpal', 'ring-finger-phalanx-proximal', 'ring-finger-phalanx-intermediate', 'ring-finger-phalanx-distal', 'ring-finger-tip'],
   pinky: ['pinky-finger-metacarpal', 'pinky-finger-phalanx-proximal', 'pinky-finger-phalanx-intermediate', 'pinky-finger-phalanx-distal', 'pinky-finger-tip'],
 };
-// how far each joint bends (radians) at a full curl, knuckle first
-const BEND = { thumb: [0.5, 0.85], index: [1.35, 1.6, 1.0], middle: [1.45, 1.7, 1.05], ring: [1.5, 1.7, 1.0], pinky: [1.55, 1.7, 1.0] };
-const CURL_SIGN = 1;
 const skinMat = new THREE.MeshStandardMaterial({ color: 0xc8957a, roughness: 0.55 });
 const handGltf = {};
 const loadHandModel = side => handGltf[side] ||= gltfLoader.loadAsync(`${HAND_URL}${side}.glb`);
-const X_AXIS = new V3(1, 0, 0);
+// real hand poses captured from Quest hand tracking (Meta's IWER, MIT licence): relaxed, point and pinch,
+// each with its grip space, so the controller hands are blends of real hands rather than bent by maths
+let handPoses = null;
+const loadHandPoses = () => handPoses ||= fetch('assets/hand-poses.json').then(r => r.json());
+const MIRROR = [1, -1, -1, 0, -1, 1, 1, 0, -1, 1, 1, 0, -1, 1, 1, 1];
+function gripSpacePoses(data, side) {
+  const fix = m => (side === 'right' ? m.map((v, i) => v * MIRROR[i]) : m);
+  const out = {};
+  for (const [name, pose] of Object.entries(data.poses)) {
+    const gi = new THREE.Matrix4().fromArray(fix(pose.grip)).invert();
+    out[name] = {};
+    for (const [j, m] of Object.entries(pose.joints)) {
+      const p = new V3(), q = new THREE.Quaternion();
+      gi.clone().multiply(new THREE.Matrix4().fromArray(fix(m))).decompose(p, q, new V3());
+      out[name][j] = { p, q };
+    }
+  }
+  return out;
+}
+// which two captured poses each finger blends between (0 = first, 1 = second)
+const HAND_MIX = { wrist: ['relaxed', 'point'], thumb: ['relaxed', 'pinch'], index: ['point', 'pinch'], middle: ['relaxed', 'point'], ring: ['relaxed', 'point'], pinky: ['relaxed', 'point'] };
 class PosedHand {
-  constructor(side, gltf) {
+  constructor(side, gltf, poseData) {
     this.side = side;
     this.root = gltf.scene;
     this.root.traverse(o => { if (o.isSkinnedMesh) { o.material = skinMat; o.frustumCulled = false; o.castShadow = true; } });
     this.bones = {};
-    this.rest = {};
-    for (const n of ['wrist', ...Object.values(FINGERS).flat()]) {
-      const b = this.root.getObjectByName(n);
-      this.bones[n] = b;
-      this.rest[n] = { p: b.position.clone(), q: b.quaternion.clone() };
-    }
-    this.curl = { thumb: 0.4, index: 0.2, middle: 0.4, ring: 0.4, pinky: 0.4 };
-    // line the closed hand up with the controller's grip space
-    this.pose({ thumb: 1, index: 0.8, middle: 1, ring: 1, pinky: 1 });
-    this.gripInv = this.gripFrame().invert();
-    this.pose(this.curl);
+    for (const n of ['wrist', ...Object.values(FINGERS).flat()]) this.bones[n] = this.root.getObjectByName(n);
+    this.poses = gripSpacePoses(poseData, side);
+    this.curl = { wrist: 0.6, thumb: 0.5, index: 0.1, middle: 0.6, ring: 0.6, pinky: 0.6 };
+    this.blend(this.curl);
+    // a gun sits in this hand with its barrel along the pointing index finger and its sides square to the grip
+    const pt = this.poses.point, d = pt['index-finger-tip'].p.clone().sub(pt['index-finger-phalanx-proximal'].p).normalize();
+    const x = new V3(1, 0, 0).addScaledVector(d, -d.x).normalize(), z = d.clone().negate();
+    this.gunMatrix = new THREE.Matrix4().makeBasis(x, new V3().crossVectors(z, x), z);
+    // holding a controller, the trigger finger lies along its pointer: turn the hand so it does
+    this.onRay = new THREE.Quaternion().setFromRotationMatrix(this.gunMatrix).invert();
   }
-  // forward kinematics down each finger, bending every joint about its own X axis
-  pose(c) {
-    for (const [f, chain] of Object.entries(FINGERS)) {
-      const amt = c[f] ?? 0, bend = BEND[f];
-      let pp = this.rest[chain[0]].p.clone(), pq = this.rest[chain[0]].q.clone();
-      this.bones[chain[0]].position.copy(pp);
-      this.bones[chain[0]].quaternion.copy(pq);
-      for (let k = 1; k < chain.length; k++) {
-        const a = this.rest[chain[k - 1]], b = this.rest[chain[k]], inv = a.q.clone().invert();
-        const seg = b.p.clone().sub(a.p).applyQuaternion(inv);
-        const rel = inv.multiply(b.q);
-        const np = pp.clone().add(seg.applyQuaternion(pq));
-        const nq = pq.clone().multiply(rel).multiply(new THREE.Quaternion().setFromAxisAngle(X_AXIS, CURL_SIGN * (bend[k - 1] || 0) * amt));
-        this.bones[chain[k]].position.copy(np);
-        this.bones[chain[k]].quaternion.copy(nq);
-        pp = np; pq = nq;
+  // controller hands: per-finger blend of the captured poses, already in the controller's grip space
+  blend(c) {
+    for (const [f, [a, b]] of Object.entries(HAND_MIX)) {
+      const t = c[f] ?? 0;
+      for (const n of f === 'wrist' ? ['wrist'] : FINGERS[f]) {
+        const A = this.poses[a][n], B = this.poses[b][n], bone = this.bones[n];
+        bone.position.lerpVectors(A.p, B.p, t);
+        bone.quaternion.slerpQuaternions(A.q, B.q, t);
       }
     }
   }
+  // tracked hands: copy the live joints
   fromJoints(joints) {
     for (const n in this.bones) { const j = joints[n]; if (j) { this.bones[n].position.copy(j.position); this.bones[n].quaternion.copy(j.quaternion); } }
-  }
-  // the WebXR grip space of this hand pose: origin in the middle of the curled fingers, -Z along a held rod
-  // towards the thumb, +X out of the back of a right hand (into the palm of a left one)
-  gripFrame() {
-    const P = n => this.bones[n].position;
-    const a = P('index-finger-metacarpal').clone().sub(P('pinky-finger-metacarpal')).normalize();
-    const f = P('middle-finger-phalanx-proximal').clone().sub(P('wrist')).normalize();
-    const x = new V3().crossVectors(f, a).normalize();
-    const z = a.clone().negate();
-    z.addScaledVector(x, -z.dot(x)).normalize();
-    const y = new V3().crossVectors(z, x);
-    const o = new V3();
-    for (const n of ['index', 'middle', 'ring', 'pinky']) for (const j of ['proximal', 'intermediate', 'distal']) o.add(P(`${n}-finger-phalanx-${j}`));
-    o.multiplyScalar(1 / 12);
-    return new THREE.Matrix4().makeBasis(x, y, z).setPosition(o);
   }
 }
 const posed = {};
 const ctrlModels = new XRControllerModelFactory();
 function attachHand(h) {
-  loadHandModel(h.side).then(gltf => {
+  Promise.all([loadHandModel(h.side), loadHandPoses()]).then(([gltf, poseData]) => {
     if (hands[h.side] !== h) return;
-    const ph = posed[h.side] ||= new PosedHand(h.side, gltf);
+    const ph = posed[h.side] ||= new PosedHand(h.side, gltf, poseData);
     h.posed = ph;
-    if (h.mode === 'ctrl') {
-      h.grip.add(ph.root);
-      ph.gripInv.decompose(ph.root.position, ph.root.quaternion, ph.root.scale);
-    } else {
-      h.xrHand.add(ph.root);
-      ph.root.position.set(0, 0, 0); ph.root.quaternion.identity(); ph.root.scale.setScalar(1);
-    }
+    (h.mode === 'ctrl' ? h.ray : h.xrHand).add(ph.root);
+    ph.root.position.set(0, 0, 0); ph.root.quaternion.copy(h.mode === 'ctrl' ? ph.onRay : _q.identity()); ph.root.scale.setScalar(1);
     ph.root.visible = true;
   }).catch(e => {
     // no hand model: fall back to drawing the controllers
@@ -1605,17 +1611,20 @@ function tryCatch(h, dt) {
 function poseControllerHand(h, dt) {
   const ph = h.posed, b = h.src.gamepad?.buttons || [];
   if (!ph) return;
-  const trig = b[0]?.value || 0, sq = b[1]?.value || 0, thumb = [3, 4, 5, 6].some(i => b[i]?.touched || b[i]?.pressed);
+  const trig = b[0]?.value || 0, sq = b[1]?.value || 0;
+  const thumbDown = [3, 4, 5, 6].some(i => b[i]?.touched || b[i]?.pressed);
   const holding = !!h.held, gun = h.held?.kind === 'gun';
-  const grip = holding ? 1 : 0.35 + 0.65 * sq;
+  const grip = holding ? 1 : 0.45 + 0.55 * sq;
   const tgt = {
-    index: gun ? 0.3 + 0.55 * trig : (b[0]?.touched ? 0.25 : 0.08) + 0.75 * trig,
-    middle: grip, ring: grip, pinky: grip,
-    thumb: holding || thumb ? 1 : 0.4,
+    wrist: grip, middle: grip, ring: grip, pinky: grip,
+    index: gun ? 0.35 + 0.65 * trig : (b[0]?.touched ? 0.2 : 0) + 0.8 * trig,
+    thumb: holding ? 0.75 : thumbDown ? 0.55 : 0.25,
   };
   const k = Math.min(1, dt * 18);
   for (const f in tgt) ph.curl[f] += (tgt[f] - ph.curl[f]) * k;
-  ph.pose(ph.curl);
+  ph.blend(ph.curl);
+  // the hand hangs off the pointer ray, positioned where the controller's grip is
+  ph.root.position.copy(h.ray.worldToLocal(h.grip.getWorldPosition(_v)));
 }
 let turnLatch = false;
 function xrInput(dt) {
@@ -1774,6 +1783,7 @@ async function enterVR() {
   initAudio();
   try {
     const session = await navigator.xr.requestSession('immersive-vr', { optionalFeatures: ['local-floor', 'bounded-floor', 'hand-tracking'] });
+    session.addEventListener('visibilitychange', () => { if (session.visibilityState === 'visible') AC?.resume(); });
     session.addEventListener('end', () => {
       xrOn = false;
       for (const s in hands) if (hands[s].held) release(hands[s].held);
@@ -1815,7 +1825,16 @@ $('playBtn').onclick = () => {
 // ---------------------------------------------------------------- main loop
 let fpsEma = 72, wristT = 0;
 const _s = new V3();
+let lastErrorT = -99;
+function reportError(e) {
+  console.error(e);
+  if (realT - lastErrorT > 5) { lastErrorT = realT; toast(`Glitch in the Matrix: ${e?.message || e}`.slice(0, 60)); }
+}
 renderer.setAnimationLoop((time) => {
+  try { update(time); } catch (e) { reportError(e); }
+  try { renderer.render(scene, camera); } catch (e) { reportError(e); }
+});
+function update(time) {
   const now = time / 1000, dt = Math.min(0.05, now - (realT || now)) || 1 / 72;
   realT = now;
   fpsEma += (1 / dt - fpsEma) * 0.05;
@@ -1860,14 +1879,30 @@ renderer.setAnimationLoop((time) => {
   toastMesh.visible = xrOn && toastT > 0;
   toastMesh.material.opacity = clamp(toastT / 0.4, 0, 1);
   if (xrOn && (wristT -= dt) <= 0) { wristT = 1; drawWrist(); }
+}
 
-  renderer.render(scene, camera);
+// The Quest can drop the GPU context when it sleeps after a while with no activity, which leaves a black
+// screen. three.js rebuilds its resources when the context comes back; the textures we render ourselves
+// (lighting environment, rack pictures) are redrawn here, and if it never comes back you can reload.
+canvas.addEventListener('webglcontextlost', () => {
+  $('lost').classList.remove('hidden');
+  $('menu').classList.add('hidden');
 });
+canvas.addEventListener('webglcontextrestored', () => {
+  $('lost').classList.add('hidden');
+  if (!xrOn) $('menu').classList.remove('hidden');
+  scene.environment = new THREE.PMREMGenerator(renderer).fromScene(new RoomEnvironment(), 0.04).texture;
+  if (impostorMats) drawImpostors();
+  drawWrist(); updateTV(1);
+});
+$('reloadBtn').onclick = () => location.reload();
+// coming back to the headset: wake the audio up again
+document.addEventListener('visibilitychange', () => { if (!document.hidden) AC?.resume(); });
 document.fonts?.ready.then(() => { drawWrist(); });
 drawWrist();
 refreshStatus();
 loadGunLibrary().catch(e => console.warn('gun models', e));
-window.construct = { get armoury() { return armoury; }, ctrlModels, skinMat, hands, posed, casings, scene, pick, raycaster, camera, bullets, renderer, takeSlot, liveInst, GUNS, loadGuns, loadAgents, setCode, toggleBT, resetConstruct, grab, release, fire, props, P, rig };
+window.construct = { reportError, get armoury() { return armoury; }, ctrlModels, skinMat, poseControllerHand, hands, posed, casings, scene, pick, raycaster, camera, bullets, renderer, takeSlot, liveInst, GUNS, loadGuns, loadAgents, setCode, toggleBT, resetConstruct, grab, release, fire, props, P, rig };
 </script>
 </body>
 </html>

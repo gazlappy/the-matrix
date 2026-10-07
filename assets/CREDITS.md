@@ -32,6 +32,11 @@ These come from [Poly Haven](https://polyhaven.com) at 1k resolution.
 | textures/leather_red_02_nor_gl.jpg | https://polyhaven.com/a/leather_red_02 |
 | textures/black_walnut_veneer_01_* | https://polyhaven.com/a/black_walnut_veneer_01 |
 
+## Hands: MIT
+
+- **Hand model:** the generic hand from the [WebXR Input Profiles](https://github.com/immersive-web/webxr-input-profiles) assets (`@webxr-input-profiles/assets`), loaded from jsDelivr. MIT License.
+- **Hand poses:** `hand-poses.json` contains the relaxed, point and pinch hand poses captured from Quest hand tracking. They come from Meta's [IWER](https://github.com/meta-quest/immersive-web-emulation-runtime) 2.4.0 (MIT License, Copyright (c) Meta Platforms, Inc. and affiliates). They're blended per finger to pose the controller hands.
+
 ## Notes on the gun processing
 
 Each model was put through the same pipeline in Blender, run headless:
