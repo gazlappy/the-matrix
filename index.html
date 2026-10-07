@@ -593,8 +593,11 @@ function setCode(on) {
   codeFloor.visible = rainWall.visible = on;
   document.body.classList.toggle('code', on);
   for (const p of props) applyLook(p);
-  for (const r of racks) setLook(r.group, on || r.matT > 0, 0.03);
-  setLook(instGroup, on || instMatT > 0, 0.02);
+  if (armoury) {
+    setLook(armouryGroup, on || armoury.matT > 0, 0.03);
+    setLook(instGroup, on || armoury.matT > 0, 0.02);
+    for (const m of armoury.meshes.imps) m.visible = !on;
+  }
   refreshStatus();
 }
 function transition(fn) { if (!fade) fade = { t: 0, fn, done: false }; }
@@ -664,7 +667,7 @@ function rackGeometry() {
   const L = RACK_L, H = RACK_H, steel = [], rubber = [];
   for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
     steel.push(xf(new THREE.BoxGeometry(0.04, H, 0.04), sx * L / 2, H / 2, sz * 0.21));
-    rubber.push(xf(new THREE.CylinderGeometry(0.024, 0.028, 0.02, 12), sx * L / 2, 0.01, sz * 0.21));
+    rubber.push(xf(new THREE.CylinderGeometry(0.024, 0.028, 0.02, 8), sx * L / 2, 0.01, sz * 0.21));
   }
   for (const sz of [-1, 1]) {
     steel.push(xf(new THREE.BoxGeometry(L, 0.045, 0.04), 0, 0.06, sz * 0.21));
@@ -680,145 +683,251 @@ function rackGeometry() {
     steel: mergeGeometries(steel),
     rubber: mergeGeometries(rubber),
     panel: new THREE.BoxGeometry(L - 0.1, H - 0.77, 0.012).translate(0, 0.69 + (H - 0.77) / 2, 0),
+    blob: new THREE.PlaneGeometry(L + 0.5, 0.95).rotateX(-Math.PI / 2).translate(0, 0.003, 0),
+    imp: new THREE.PlaneGeometry(L, RACK_H).translate(0, RACK_H / 2, 0.17),
   };
   return rackParts;
 }
-function rackPlate(n) {
-  const t = canvasTex(256, 32, (g, w, h) => {
-    g.fillStyle = '#16181a'; g.fillRect(0, 0, w, h);
-    g.fillStyle = '#d9d6cc'; g.font = 'bold 18px "Share Tech Mono", monospace'; g.textBaseline = 'middle';
-    g.fillText(`RACK ${String.fromCharCode(65 + n)}  //  SMALL ARMS`, 10, h / 2 + 1);
-  });
-  return new THREE.MeshStandardMaterial({ map: t, metalness: 0.4, roughness: 0.5 });
-}
 const Q_LONG = new THREE.Quaternion().setFromEuler(new THREE.Euler(Math.PI / 2, -Math.PI / 2, 0, 'YXZ'));
 const Q_PISTOL = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, -Math.PI / 2, 0));
-const Q_BACK = new THREE.Quaternion().setFromAxisAngle(UP, Math.PI);
+const BACK = new THREE.Matrix4().makeRotationY(Math.PI);
 function placedBox(G, q) {
   return new THREE.Box3(G.min.clone(), G.max.clone()).applyMatrix4(new THREE.Matrix4().makeRotationFromQuaternion(q));
 }
-function rackLayout(seed) {
+// the guns on one face of a rack (rack-local, front face = +Z); the back face is the same turned round
+const layouts = [];
+function rackLayout(v) {
+  if (layouts[v]) return layouts[v];
   const slots = [], keys = Object.keys(GUNS), L = RACK_L - 0.14;
   const longs = keys.filter(k => GUNS[k].long), pistols = keys.filter(k => !GUNS[k].long);
-  for (const side of [1, -1]) {
-    const base = side > 0 ? new THREE.Quaternion() : Q_BACK;
-    let x = -L / 2, i = seed + (side > 0 ? 0 : 3);
+  let x = -L / 2, i = v * 2;
+  for (;;) {
+    const key = longs[i++ % longs.length], b = placedBox(GUNS[key], Q_LONG);
+    if (x + b.max.x - b.min.x > L / 2) break;
+    slots.push({ key, m: new THREE.Matrix4().compose(new V3(x - b.min.x, 0.131 - b.min.y, 0.15 - (b.min.z + b.max.z) / 2), Q_LONG, ONE) });
+    x += b.max.x - b.min.x + 0.035;
+  }
+  for (const [row, y] of [[0, 1.4], [1, 1.73]]) {
+    let x = -L / 2 + 0.06, j = v * 3 + row * 2;
     for (;;) {
-      const key = longs[i++ % longs.length], q = base.clone().multiply(Q_LONG), b = placedBox(GUNS[key], q);
-      if (x + b.max.x - b.min.x > L / 2) break;
-      slots.push({ key, q, pos: new V3(x - b.min.x, 0.131 - b.min.y, side * 0.15 - (b.min.z + b.max.z) / 2) });
-      x += b.max.x - b.min.x + 0.035;
-    }
-    for (const [row, y] of [[0, 1.4], [1, 1.73]]) {
-      let x = -L / 2 + 0.06, j = seed * 2 + row * 3 + (side > 0 ? 0 : 1);
-      for (;;) {
-        const key = pistols[j++ % pistols.length], q = base.clone().multiply(Q_PISTOL), b = placedBox(GUNS[key], q);
-        if (x + b.max.x - b.min.x > L / 2 - 0.04) break;
-        slots.push({ key, q, pos: new V3(x - b.min.x, y, side > 0 ? 0.011 - b.min.z : -0.011 - b.max.z) });
-        x += b.max.x - b.min.x + 0.07;
-      }
+      const key = pistols[j++ % pistols.length], b = placedBox(GUNS[key], Q_PISTOL);
+      if (x + b.max.x - b.min.x > L / 2 - 0.04) break;
+      slots.push({ key, m: new THREE.Matrix4().compose(new V3(x - b.min.x, y, 0.011 - b.min.z), Q_PISTOL, ONE) });
+      x += b.max.x - b.min.x + 0.07;
     }
   }
-  return slots;
+  return (layouts[v] = slots);
+}
+// a flat picture of each layout's guns, used on every rack face that isn't right next to you
+const IMP_VARIANTS = 4;
+let impostorMats = null;
+function bakeImpostors() {
+  if (impostorMats) return impostorMats;
+  const tmp = new THREE.Scene();
+  tmp.environment = scene.environment;
+  tmp.environmentIntensity = scene.environmentIntensity;
+  tmp.add(new THREE.HemisphereLight(0xffffff, 0xd8d8d4, 1.15));
+  const key = new THREE.DirectionalLight(0xffffff, 2.3);
+  key.position.set(2, 6, 6);
+  tmp.add(key);
+  const cam = new THREE.OrthographicCamera(-RACK_L / 2, RACK_L / 2, RACK_H, 0, 0.01, 2);
+  cam.position.set(0, 0, 1);
+  const xr = renderer.xr.enabled, clear = renderer.getClearColor(new THREE.Color()), alpha = renderer.getClearAlpha();
+  renderer.xr.enabled = false;
+  renderer.setClearColor(0x000000, 0);
+  impostorMats = [];
+  for (let v = 0; v < IMP_VARIANTS; v++) {
+    const g = new THREE.Group();
+    for (const s of rackLayout(v)) { const o = makeGun(s.key); s.m.decompose(o.position, o.quaternion, o.scale); g.add(o); }
+    tmp.add(g);
+    const rt = new THREE.WebGLRenderTarget(1024, 896, { samples: 4 });
+    rt.texture.colorSpace = THREE.SRGBColorSpace;
+    renderer.setRenderTarget(rt);
+    renderer.clear();
+    renderer.render(tmp, cam);
+    tmp.remove(g);
+    impostorMats.push(new THREE.MeshBasicMaterial({ map: rt.texture, alphaTest: 0.5 }));
+  }
+  renderer.setRenderTarget(null);
+  renderer.setClearColor(clear, alpha);
+  renderer.xr.enabled = xr;
+  return impostorMats;
 }
 
-const racks = [], rackInst = {};
-const instGroup = new THREE.Group();
-scene.add(instGroup);
+// ---- the endless armoury: a grid of racks around where you stood when you loaded it.
+// Only racks within ARM.R exist (fog hides the edge); the faces within ARM.LIVE hold real guns.
+const ARM = { PX: 2.85, PZ: 2.55, R: 27, LIVE: 3.4, KEEP: 14, CAP: 420, GUN_CAP: 160, CLEAR: 2.4 };
+const armouryGroup = new THREE.Group();   // frames, panels, shadows and impostors
+const instGroup = new THREE.Group();      // real guns on the live rack faces
+scene.add(armouryGroup, instGroup);
+let armoury = null, gunsLoading = false;
+const liveInst = {};
 const ZERO = new THREE.Matrix4().makeScale(0, 0, 0);
-let instDirty = false, instMatT = 0, gunsLoading = false;
+// soft contact shadow under each rack (the field racks don't cast real shadows, to stay cheap on the Quest)
+const blobTex = canvasTex(128, 64, (g, w, h) => {
+  const gr = g.createRadialGradient(w / 2, h / 2, 4, w / 2, h / 2, w / 2);
+  gr.addColorStop(0, '#fff'); gr.addColorStop(0.55, '#aaa'); gr.addColorStop(1, '#000');
+  g.fillStyle = gr; g.setTransform(1, 0, 0, 0.5, 0, h / 4); g.fillRect(0, 0, w, h * 2);
+}, false);
+const _am = new THREE.Matrix4(), _aq = new THREE.Quaternion(), _ap = new V3(), _al = new V3();
+const cellHash = (i, j, s) => { let h = Math.imul(i, 73856093) ^ Math.imul(j, 19349663) ^ Math.imul(s + 2, 83492791); h = Math.imul(h ^ (h >>> 13), 1274126177); return (h ^ (h >>> 16)) >>> 0; };
+function toLocal(a, p, out) { return out.set(p.x - a.origin.x, 0, p.z - a.origin.z).applyAxisAngle(UP, -a.yaw); }
+function rackMatrix(a, gx, gz, out) {
+  _ap.set(gx, 0, gz).applyAxisAngle(UP, a.yaw).add(a.origin);
+  return out.compose(_ap, _aq.setFromAxisAngle(UP, a.yaw + Math.PI / 2), ONE);
+}
+function makeArmouryMeshes() {
+  const rp = rackGeometry(), mats = bakeImpostors();
+  const blobMat = new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.22, alphaMap: blobTex, depthWrite: false });
+  const mk = (geo, mat, cap = ARM.CAP) => { const m = new THREE.InstancedMesh(geo, mat, cap); m.frustumCulled = false; m.count = 0; m.userData.mat = mat; armouryGroup.add(m); return m; };
+  const frames = [mk(rp.steel, M.steel), mk(rp.rubber, M.rubber), mk(rp.panel, M.pegboard)];
+  const blob = mk(rp.blob, blobMat);
+  blob.userData.mat = null;
+  const imps = mats.map(mt => { const m = mk(rp.imp, mt, ARM.CAP * 2); m.userData.mat = null; return m; });
+  return { frames, blob, imps };
+}
 async function loadGuns() {
-  if (racks.length) { unloadGuns(); return; }
+  if (armoury) { unloadGuns(); return; }
   if (gunsLoading) return;
   if (!Object.keys(GUNS).length) toast('Loading the armoury...');
   gunsLoading = true;
   try { await loadGunLibrary(); } catch (e) { console.warn(e); toast('Could not load the gun models'); return; } finally { gunsLoading = false; }
-  const f = viewYaw(), head = headPos(new V3()), fwd = new V3(-Math.sin(f), 0, -Math.cos(f));
-  const rp = rackGeometry(), counts = {};
-  // an aisle of racks either side of you, like the film
-  [[-2.05, -0.9], [-2.05, -3.5], [2.05, -0.9], [2.05, -3.5]].forEach(([x, z], i) => {
-    const side = x < 0 ? 1 : -1, group = new THREE.Group(), plate = rackPlate(i);
-    group.add(new THREE.Mesh(rp.steel, M.steel), new THREE.Mesh(rp.rubber, M.rubber), new THREE.Mesh(rp.panel, M.pegboard));
-    for (const sz of [1, -1]) {
-      const m = new THREE.Mesh(new THREE.PlaneGeometry(0.42, 0.0525), plate);
-      m.position.set(0, RACK_H - 0.022, sz * 0.231);
-      if (sz < 0) m.rotation.y = Math.PI;
-      group.add(m);
-    }
-    prepMeshes(group);
-    const end = new V3(x, 0, z).applyAxisAngle(UP, f).add(new V3(head.x, 0, head.z));
-    group.position.copy(end).addScaledVector(fwd, 26 + i * 2.5);
-    group.rotation.y = f + side * Math.PI / 2;
-    group.updateMatrixWorld(true);
-    world.add(group);
-    const rack = { group, start: group.position.clone(), end, t: -i * 0.15, matT: 1.7, slots: rackLayout(i * 2) };
-    for (const s of rack.slots) {
-      s.rack = rack;
-      s.local = new THREE.Matrix4().compose(s.pos, s.q, ONE);
-      s.world = new THREE.Matrix4();
-      s.idx = counts[s.key] || 0;
-      counts[s.key] = s.idx + 1;
-    }
-    setLook(group, true, 0.03);
-    racks.push(rack);
-  });
-  for (const [key, n] of Object.entries(counts)) {
-    const meshes = GUNS[key].parts.map(p => {
-      const m = new THREE.InstancedMesh(p.geo, p.mat, n);
-      m.frustumCulled = false;
-      m.userData = { mat: p.mat, gunKey: key };
+  const head = headPos(new V3());
+  armoury = { origin: new V3(head.x, 0, head.z), yaw: viewYaw(), cell: null, racks: [], live: new Map(), taken: new Set(), t: 0, matT: 1.8, liveT: 0 };
+  armoury.furniture = toLocal(armoury, new V3(0, 0, -1.6), new V3());
+  armoury.meshes = makeArmouryMeshes();
+  for (const k in GUNS) {
+    liveInst[k] = { slots: [], meshes: GUNS[k].parts.map(p => {
+      const m = new THREE.InstancedMesh(p.geo, p.mat, ARM.GUN_CAP);
+      m.frustumCulled = false; m.count = 0;
+      m.userData = { mat: p.mat, gunKey: k };
       instGroup.add(m);
       return m;
-    });
-    rackInst[key] = { meshes, slots: [] };
+    }) };
   }
-  for (const r of racks) for (const s of r.slots) rackInst[s.key].slots[s.idx] = s;
-  instDirty = true;
-  instMatT = 1.7;
-  setLook(instGroup, true, 0.02);
+  scene.fog = new THREE.Fog(bgColor, 6, ARM.R - 2);
+  scene.fog.color = bgColor;
+  for (const c of [0.03, 0.02]) codeMatFor(c).uniforms.fadeDist.value = ARM.R - 3;
+  setLook(armouryGroup, true, 0.03);
+  updateArmoury(0, true);
   play('whoosh', 1, 1);
   toast('Guns. Lots of guns.');
   drawWrist();
 }
 function unloadGuns() {
-  for (const r of racks) r.group.removeFromParent();
-  racks.length = 0;
-  for (const k in rackInst) { for (const m of rackInst[k].meshes) { m.removeFromParent(); m.dispose(); } delete rackInst[k]; }
+  if (!armoury) return;
+  for (const m of [...armouryGroup.children, ...instGroup.children]) { m.removeFromParent(); m.dispose(); }
+  for (const k in liveInst) delete liveInst[k];
+  armoury = null;
+  scene.fog = null;
+  for (const c of [0.03, 0.02]) codeMatFor(c).uniforms.fadeDist.value = 0;
   drawWrist();
 }
-function takeSlot(s) {
-  if (!s || s.taken) return null;
-  s.taken = true;
-  instDirty = true;
-  return spawnGun(s.key, s.world.clone());
+// which racks exist around the player; rebuilt whenever you step into a new grid cell
+function rebuildField(a, me) {
+  const ci = Math.floor(me.x / ARM.PX), cj = Math.round(me.z / ARM.PZ);
+  if (a.cell && a.cell[0] === ci && a.cell[1] === cj) return false;
+  a.cell = [ci, cj];
+  a.racks = [];
+  const ni = Math.ceil(ARM.R / ARM.PX) + 1, nj = Math.ceil(ARM.R / ARM.PZ) + 1;
+  for (let i = ci - ni; i <= ci + ni; i++) for (let j = cj - nj; j <= cj + nj; j++) {
+    const gx = (i + 0.5) * ARM.PX, gz = j * ARM.PZ;
+    if (Math.hypot(gx - me.x, gz - me.z) > ARM.R) continue;
+    const dz = Math.max(0, Math.abs(gz - a.furniture.z) - RACK_L / 2);
+    if (Math.hypot(gx - a.furniture.x, dz) < ARM.CLEAR) continue;
+    a.racks.push({ i, j, gx, gz, d: Math.hypot(gx, gz), v: [cellHash(i, j, 1) % IMP_VARIANTS, cellHash(i, j, -1) % IMP_VARIANTS] });
+    if (a.racks.length >= ARM.CAP) break;
+  }
+  return true;
 }
-function updateRacks(dt) {
-  for (const r of racks) {
-    if (r.t < 1) {
-      r.t = Math.min(1, r.t + dt / 1.4);
-      r.group.position.lerpVectors(r.start, r.end, 1 - (1 - clamp(r.t, 0, 1)) ** 4);
-      r.group.updateMatrixWorld(true);
-      instDirty = true;
+function writeField(a) {
+  const { frames, blob, imps } = a.meshes, impN = imps.map(() => 0);
+  a.racks.forEach((r, n) => {
+    // on loading, racks rush in from far down the aisle, nearest first
+    const e = 1 - (1 - clamp(a.t * 1.6 - r.d * 0.035, 0, 1)) ** 4;
+    rackMatrix(a, r.gx, r.gz - 34 * (1 - e), _am);
+    for (const m of frames) m.setMatrixAt(n, _am);
+    blob.setMatrixAt(n, _am);
+    r.impIdx = [];
+    for (const [k, s] of [[0, 1], [1, -1]]) {
+      const live = a.live.has(`${r.i},${r.j},${s}`), im = imps[r.v[k]], idx = impN[r.v[k]]++;
+      im.setMatrixAt(idx, live ? ZERO : s > 0 ? _am : _m2.multiplyMatrices(_am, BACK));
+      r.impIdx[k] = idx;
     }
-    if (r.matT > 0 && (r.matT -= dt) <= 0) setLook(r.group, codeMode, 0.03);
+  });
+  for (const m of [...frames, blob]) { m.count = a.racks.length; m.instanceMatrix.needsUpdate = true; m.computeBoundingSphere(); }
+  imps.forEach((m, k) => { m.count = impN[k]; m.instanceMatrix.needsUpdate = true; m.visible = !codeMode; });
+}
+// the rack faces close to you hold real guns
+function chooseLive(a, me) {
+  const want = new Map();
+  for (const r of a.racks) {
+    if (Math.abs(r.gx - me.x) > ARM.KEEP || Math.abs(r.gz - me.z) > ARM.KEEP) continue;
+    for (const s of [1, -1]) {
+      const id = `${r.i},${r.j},${s}`;
+      const dx = (me.x - r.gx) * s, dz = Math.max(0, Math.abs(me.z - r.gz) - RACK_L / 2), d = Math.hypot(dx, dz);
+      const near = dx > 0.05 && d < ARM.LIVE;
+      const keep = a.live.has(id) && d < ARM.LIVE + 0.6;
+      const hasTaken = a.takenFaces?.has(id) && d < ARM.KEEP;
+      if (near || keep || hasTaken) want.set(id, { r, s, v: r.v[s > 0 ? 0 : 1] });
+    }
   }
-  if (instMatT > 0 && (instMatT -= dt) <= 0) setLook(instGroup, codeMode, 0.02);
-  if (!instDirty) return;
-  instDirty = false;
-  for (const key in rackInst) {
-    const { meshes, slots } = rackInst[key];
-    slots.forEach((s, i) => {
-      if (!s.taken) s.world.multiplyMatrices(s.rack.group.matrixWorld, s.local);
-      for (const m of meshes) m.setMatrixAt(i, s.taken ? ZERO : s.world);
+  const same = want.size === a.live.size && [...want.keys()].every(k => a.live.has(k));
+  if (!same) a.live = want;
+  return !same;
+}
+function writeLive(a) {
+  for (const k in liveInst) liveInst[k].slots = [];
+  for (const [id, f] of a.live) {
+    rackMatrix(a, f.r.gx, f.r.gz, _am);
+    if (f.s < 0) _am.multiply(BACK);
+    rackLayout(f.v).forEach((s, n) => {
+      const sid = `${id},${n}`;
+      if (a.taken.has(sid)) return;
+      const L = liveInst[s.key];
+      if (L.slots.length >= ARM.GUN_CAP) return;
+      L.slots.push({ id: sid, face: id, key: s.key, world: new THREE.Matrix4().multiplyMatrices(_am, s.m) });
     });
-    for (const m of meshes) { m.instanceMatrix.needsUpdate = true; m.computeBoundingSphere(); }
   }
+  for (const k in liveInst) {
+    const { slots, meshes } = liveInst[k];
+    for (const m of meshes) {
+      slots.forEach((s, i) => m.setMatrixAt(i, s.world));
+      m.count = slots.length;
+      m.instanceMatrix.needsUpdate = true;
+      m.computeBoundingSphere();
+    }
+  }
+}
+function updateArmoury(dt, force = false) {
+  const a = armoury;
+  if (!a) return;
+  const me = toLocal(a, headPos(_al), new V3());
+  const arriving = a.t < 2.2;
+  a.t += dt;
+  if (a.matT > 0 && (a.matT -= dt) <= 0) { setLook(armouryGroup, codeMode, 0.03); setLook(instGroup, codeMode, 0.02); }
+  let fieldChanged = rebuildField(a, me) || force;
+  let liveChanged = false;
+  if (!arriving && ((a.liveT -= dt) <= 0 || fieldChanged)) {
+    a.liveT = 0.15;
+    liveChanged = chooseLive(a, me);
+  }
+  if (arriving || fieldChanged || liveChanged) writeField(a);
+  if (liveChanged || a.slotsDirty) { a.slotsDirty = false; writeLive(a); }
+}
+function takeSlot(s) {
+  const a = armoury;
+  if (!a || !s || a.taken.has(s.id)) return null;
+  a.taken.add(s.id);
+  (a.takenFaces ||= new Set()).add(s.face);
+  a.slotsDirty = true;
+  return spawnGun(s.key, s.world.clone());
 }
 // what a ray hit: a loose prop, or a gun still on a rack (turned into a prop only when used)
 function targetOf(hit) {
   if (hit.object.isInstancedMesh) {
-    const s = rackInst[hit.object.userData.gunKey]?.slots[hit.instanceId];
-    return s && !s.taken ? { slot: s, name: GUNS[s.key].name, hit } : null;
+    const s = liveInst[hit.object.userData.gunKey]?.slots[hit.instanceId];
+    return s ? { slot: s, name: GUNS[s.key].name, hit } : null;
   }
   const p = propOf(hit.object);
   return p ? { prop: p, name: p.name, hit } : null;
@@ -830,6 +939,7 @@ function pick(far = 25, skip = null) {
   return null;
 }
 const realize = t => t ? (t.prop || takeSlot(t.slot)) : null;
+
 
 function loadAgents() {
   for (const p of props.filter(p => p.kind === 'agent')) removeProp(p);
@@ -1014,13 +1124,13 @@ function hitProp(p, point, dir) {
   p.body.applyImpulse(new CANNON.Vec3(dir.x * j, dir.y * j, dir.z * j), new CANNON.Vec3(point.x - p.body.position.x, point.y - p.body.position.y, point.z - p.body.position.z));
 }
 function updateBullets(dt, sdt) {
-  const targets = props.map(p => p.obj).concat(instGroup.children, racks.map(r => r.group));
+  const targets = props.map(p => p.obj).concat(instGroup.children, armoury ? armoury.meshes.frames : []);
   for (let i = bullets.length - 1; i >= 0; i--) {
     const b = bullets[i];
     const step = b.speed * sdt;
     raycaster.set(b.pos, b.dir);
     raycaster.far = step;
-    const hit = raycaster.intersectObjects(targets, true).find(h => h.object.isInstancedMesh ? !rackInst[h.object.userData.gunKey]?.slots[h.instanceId]?.taken : propOf(h.object) !== b.owner);
+    const hit = raycaster.intersectObjects(targets, true).find(h => h.object.userData.gunKey ? !!liveInst[h.object.userData.gunKey]?.slots[h.instanceId] : h.object.isInstancedMesh || propOf(h.object) !== b.owner);
     let end = null;
     if (hit) {
       end = hit.point;
@@ -1120,7 +1230,7 @@ const wrist = new THREE.Mesh(new THREE.PlaneGeometry(0.2, 0.156), new THREE.Mesh
 wrist.position.set(0, 0.08, 0.03);
 wrist.rotation.x = -0.9;
 const ACTIONS = [
-  ['LOAD GUNS', loadGuns, () => racks.length > 0],
+  ['LOAD GUNS', loadGuns, () => !!armoury],
   ['LOAD AGENTS', loadAgents, () => props.some(p => p.kind === 'agent')],
   ['CODE VISION', toggleCode, () => codeMode],
   ['BULLET TIME', toggleBT, () => btOn],
@@ -1188,8 +1298,7 @@ function nearestProp(h) {
     const d = _box3.setFromObject(p.obj).distanceToPoint(_v);
     if (d < bd) { bd = d; best = { prop: p }; }
   }
-  for (const k in rackInst) for (const s of rackInst[k].slots) {
-    if (s.taken) continue;
+  for (const k in liveInst) for (const s of liveInst[k].slots) {
     const d = _v2.setFromMatrixPosition(s.world).distanceTo(_v) - 0.04;
     if (d < bd) { bd = d; best = { slot: s }; }
   }
@@ -1396,7 +1505,7 @@ renderer.setAnimationLoop((time) => {
 
   if (xrOn) xrInput(dt); else deskInput(dt);
   for (const p of props) if (p.cool > 0) p.cool -= dt;
-  updateRacks(dt);
+  updateArmoury(dt);
   updateHeld(dt);
   physics.step(1 / 90, sdt, 6);
   for (const p of props) {
@@ -1435,7 +1544,7 @@ document.fonts?.ready.then(() => { drawWrist(); });
 drawWrist();
 refreshStatus();
 loadGunLibrary().catch(e => console.warn('gun models', e));
-window.construct = { renderer, takeSlot, rackInst, GUNS, loadGuns, loadAgents, setCode, toggleBT, resetConstruct, grab, release, fire, props, P, rig };
+window.construct = { get armoury() { return armoury; }, pick, raycaster, camera, bullets, renderer, takeSlot, liveInst, GUNS, loadGuns, loadAgents, setCode, toggleBT, resetConstruct, grab, release, fire, props, P, rig };
 </script>
 </body>
 </html>

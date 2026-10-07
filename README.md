@@ -4,7 +4,7 @@ A Matrix-style "Construct" playground for the Meta Quest 3, made as a single HTM
 
 It's an endless white room with two red leather wingback chairs and the old Deep Focus TV between them. In it you can:
 
-- **Load guns:** gun racks slide in around you, and every pistol and rifle on them can be taken down and fired
+- **Load guns:** an endless armoury of gun racks rushes in around you. You can walk its aisles forever, and every gun on every rack can be taken down and fired
 - **Load agents:** three agents in suits and sunglasses appear, and they fall over when you shoot them
 - **Bullet time:** slow-motion bullets with trails, expanding rings and flying brass
 - **Code vision:** everything turns into green falling code
