@@ -39,4 +39,8 @@ To play on a Quest 3 over USB, plug the headset in and run `play-on-quest.bat`. 
 | Load agents | Wrist menu | 2 |
 | Wrist menu / reset | Y | R resets |
 
+## Credits
+
+The gun models are by austincford and PuKkBuMXDD, licensed CC-BY 3.0 and downloaded from Poly Pizza. The leather and walnut textures are CC0 from Poly Haven. See [assets/CREDITS.md](assets/CREDITS.md) for the full list.
+
 A fan project. It isn't affiliated with Warner Bros. or The Matrix franchise.

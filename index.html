@@ -63,6 +63,7 @@
       <kbd>A</kbd><span>code vision</span><kbd>B</kbd><span>load guns</span>
     </div>
     <p class="small">Take a pill from the dish on the TV: hold it to your mouth (or click it on desktop).</p>
+    <p class="small">Gun models by austincford and PuKkBuMXDD (CC-BY 3.0, via Poly Pizza). Leather and walnut textures from Poly Haven (CC0). Full list in assets/CREDITS.md.</p>
   </div>
 </div>
 <div id="crosshair" class="hidden"></div>
@@ -85,6 +86,7 @@ import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.j
 import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
 const $ = id => document.getElementById(id);
 const V3 = THREE.Vector3;
@@ -169,8 +171,12 @@ const codeTime = { value: 0 };
 const CODE_VS = `
 varying vec3 vW; varying vec3 vN;
 void main() {
-  vec4 w = modelMatrix * vec4(position, 1.0);
-  vW = w.xyz; vN = normalize(mat3(modelMatrix) * normal);
+  mat4 m = modelMatrix;
+#ifdef USE_INSTANCING
+  m = modelMatrix * instanceMatrix;
+#endif
+  vec4 w = m * vec4(position, 1.0);
+  vW = w.xyz; vN = normalize(mat3(m) * normal);
   gl_Position = projectionMatrix * viewMatrix * w;
 }`;
 const CODE_FS = `
@@ -241,17 +247,34 @@ function canvasTex(w, h, draw, srgb = true) {
   t.anisotropy = 4;
   return t;
 }
-const woodMap = canvasTex(256, 256, (g, w, h) => {
-  g.fillStyle = '#5c331a'; g.fillRect(0, 0, w, h);
-  for (let i = 0; i < 80; i++) {
-    g.strokeStyle = `rgba(${25 + Math.random() * 30 | 0},${12 + Math.random() * 10 | 0},4,${rand(0.12, 0.4)})`;
-    g.lineWidth = rand(0.5, 3);
-    const y0 = Math.random() * h, ph = Math.random() * 6;
-    g.beginPath(); g.moveTo(0, y0);
-    for (let x = 0; x <= w; x += 8) g.lineTo(x, y0 + Math.sin(x * 0.025 + ph) * 5);
-    g.stroke();
+const texLoader = new THREE.TextureLoader();
+function photoTex(file, repeat = 1, srgb = false) {
+  const t = texLoader.load(`assets/textures/${file}`);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.repeat.set(repeat, repeat);
+  t.anisotropy = 8;
+  if (srgb) t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+// Poly Haven CC0 scans: red leather for the chairs, black walnut for the TV cabinet
+const LEATHER = { map: photoTex('leather_red_03_coll1.jpg', 1.5, true), roughnessMap: photoTex('leather_red_03_rough.jpg', 1.5) };
+const leatherNormal = photoTex('leather_red_02_nor_gl.jpg', 1.5);
+const WALNUT = { map: photoTex('black_walnut_veneer_01_diff.jpg', 1, true), normalMap: photoTex('black_walnut_veneer_01_nor_gl.jpg', 1), roughnessMap: photoTex('black_walnut_veneer_01_rough.jpg', 1) };
+// perforated steel for the gun racks: painted holes (mipmapped, so no shimmer at a distance in the headset)
+const pegHoles = canvasTex(256, 256, (g, w, h) => {
+  g.fillStyle = '#9aa0a6'; g.fillRect(0, 0, w, h);
+  for (let y = 16; y < h; y += 32) for (let x = 16; x < w; x += 32) {
+    g.fillStyle = '#1b1d20'; g.beginPath(); g.arc(x, y, 5, 0, Math.PI * 2); g.fill();
+    g.fillStyle = 'rgba(255,255,255,0.25)'; g.beginPath(); g.arc(x, y + 1.5, 5, 0.15 * Math.PI, 0.85 * Math.PI); g.lineWidth = 1; g.strokeStyle = 'rgba(255,255,255,0.3)'; g.stroke();
   }
 });
+pegHoles.wrapS = pegHoles.wrapT = THREE.RepeatWrapping;
+pegHoles.repeat.set(8.5, 4.7);
+const brushed = canvasTex(256, 256, (g, w, h) => {
+  g.fillStyle = '#808080'; g.fillRect(0, 0, w, h);
+  for (let i = 0; i < 600; i++) { const v = 95 + Math.random() * 90 | 0; g.fillStyle = `rgb(${v},${v},${v})`; g.fillRect(0, Math.random() * h, w, rand(0.4, 1.4)); }
+}, false);
+brushed.wrapS = brushed.wrapT = THREE.RepeatWrapping;
 // buttons on the chair back: 4 rows alternating 5 / 4, 15 cm apart, rows 16 cm apart
 const TUFTS = [];
 for (let r = 0; r < 4; r++) { const n = r % 2 ? 4 : 5; for (let c = 0; c < n; c++) TUFTS.push([(c - (n - 1) / 2) * 0.15, -0.25 + r * 0.16]); }
@@ -279,10 +302,10 @@ const plaqueMap = canvasTex(512, 64, (g, w, h) => {
   g.fillStyle = '#3b2a10'; g.fillText('D E E P   F O C U S', w / 2, h / 2 + 2);
 });
 const M = {
-  leather: new THREE.MeshPhysicalMaterial({ color: 0x6b0f0b, roughness: 0.4, clearcoat: 0.45, clearcoatRoughness: 0.35 }),
-  tufted: new THREE.MeshPhysicalMaterial({ color: 0x6b0f0b, roughness: 0.4, clearcoat: 0.45, clearcoatRoughness: 0.35, bumpMap: tuftBump, bumpScale: 4 }),
+  leather: new THREE.MeshPhysicalMaterial({ ...LEATHER, normalMap: leatherNormal, normalScale: new THREE.Vector2(0.7, 0.7), color: 0xb05a50, roughness: 0.95, clearcoat: 0.3, clearcoatRoughness: 0.45 }),
+  tufted: new THREE.MeshPhysicalMaterial({ ...LEATHER, bumpMap: tuftBump, bumpScale: 4, color: 0xb05a50, roughness: 0.95, clearcoat: 0.3, clearcoatRoughness: 0.45 }),
   button: new THREE.MeshPhysicalMaterial({ color: 0x4a0806, roughness: 0.3, clearcoat: 0.6 }),
-  wood: new THREE.MeshStandardMaterial({ map: woodMap, roughness: 0.45 }),
+  wood: new THREE.MeshStandardMaterial({ ...WALNUT, color: 0x6a4a38, roughness: 0.85 }),
   darkWood: new THREE.MeshStandardMaterial({ color: 0x2a160b, roughness: 0.5 }),
   brass: new THREE.MeshStandardMaterial({ color: 0xb8924f, metalness: 1, roughness: 0.32 }),
   black: new THREE.MeshStandardMaterial({ color: 0x0c0c0c, roughness: 0.35 }),
@@ -290,9 +313,9 @@ const M = {
   plaque: new THREE.MeshStandardMaterial({ map: plaqueMap, metalness: 0.7, roughness: 0.35 }),
   glass: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.05, metalness: 0.1, transparent: true, opacity: 0.3 }),
   chrome: new THREE.MeshStandardMaterial({ color: 0xe6e6e6, metalness: 1, roughness: 0.14 }),
-  gun: new THREE.MeshStandardMaterial({ color: 0x1b1c1e, metalness: 0.75, roughness: 0.38 }),
-  rack: new THREE.MeshStandardMaterial({ color: 0x2c2d30, metalness: 0.4, roughness: 0.6 }),
-  board: new THREE.MeshStandardMaterial({ color: 0xd4d6d8, roughness: 0.8 }),
+  steel: new THREE.MeshStandardMaterial({ color: 0x3d4146, metalness: 0.7, roughness: 0.55, roughnessMap: brushed }),
+  rubber: new THREE.MeshStandardMaterial({ color: 0x151515, roughness: 0.92 }),
+  pegboard: new THREE.MeshStandardMaterial({ map: pegHoles, metalness: 0.55, roughness: 0.45, roughnessMap: brushed }),
   suit: new THREE.MeshStandardMaterial({ color: 0x141518, roughness: 0.62 }),
   shirt: new THREE.MeshStandardMaterial({ color: 0xf4f4f2, roughness: 0.7 }),
   skin: new THREE.MeshStandardMaterial({ color: 0xc89a7c, roughness: 0.6 }),
@@ -378,7 +401,6 @@ function addProp(obj, { shapes, mass, kind, name, cell = 0.045, home = false, ma
 function removeProp(p) {
   if (!props.includes(p)) return;
   if (p.hold) release(p);
-  if (p.rack) p.rack.guns.splice(p.rack.guns.indexOf(p), 1);
   physics.removeBody(p.body);
   p.obj.removeFromParent();
   props.splice(props.indexOf(p), 1);
@@ -459,36 +481,6 @@ function bendSpoon(p, a) {
   }
   pos.needsUpdate = true;
   m.geometry.computeVertexNormals();
-}
-
-// guns: grip at the origin, barrel down -Z
-function makeGunGeo(rifle) {
-  return mergeGeometries(rifle ? [
-    xf(new THREE.BoxGeometry(0.042, 0.07, 0.34), 0, 0.035, -0.12),
-    xf(new THREE.CylinderGeometry(0.011, 0.011, 0.36, 10), 0, 0.05, -0.47, Math.PI / 2),
-    xf(new THREE.BoxGeometry(0.05, 0.055, 0.22), 0, 0.04, -0.36),
-    xf(new THREE.BoxGeometry(0.036, 0.075, 0.24), 0, 0.0, 0.17, -0.08),
-    xf(new THREE.BoxGeometry(0.03, 0.09, 0.04), 0, -0.045, 0, 0.3),
-    xf(new THREE.BoxGeometry(0.03, 0.13, 0.05), 0, -0.06, -0.13, -0.15),
-    xf(new THREE.BoxGeometry(0.02, 0.03, 0.06), 0, 0.085, -0.1),
-  ] : [
-    xf(new THREE.BoxGeometry(0.03, 0.034, 0.19), 0, 0.03, -0.07),
-    xf(new THREE.BoxGeometry(0.028, 0.022, 0.15), 0, 0.004, -0.06),
-    xf(new THREE.BoxGeometry(0.028, 0.11, 0.044), 0, -0.045, 0.012, 0.28),
-    xf(new THREE.TorusGeometry(0.017, 0.004, 6, 12, Math.PI), 0, -0.007, -0.035, 0, Math.PI / 2, Math.PI),
-    xf(new THREE.CylinderGeometry(0.007, 0.007, 0.02, 10), 0, 0.03, -0.17, Math.PI / 2),
-    xf(new THREE.BoxGeometry(0.006, 0.008, 0.01), 0, 0.051, -0.15),
-  ]);
-}
-const GUN = {
-  pistol: { geo: makeGunGeo(false), muzzle: new V3(0, 0.03, -0.185), eject: new V3(0.02, 0.045, -0.04), mass: 1.1, auto: false, name: 'Pistol' },
-  rifle: { geo: makeGunGeo(true), muzzle: new V3(0, 0.05, -0.66), eject: new V3(0.025, 0.06, -0.1), mass: 3.5, auto: true, name: 'Rifle' },
-};
-for (const k in GUN) { const bb = (GUN[k].geo.computeBoundingBox(), GUN[k].geo.boundingBox); GUN[k].shape = box(...bb.getSize(new V3()).multiplyScalar(0.5).toArray(), ...bb.getCenter(new V3()).toArray()); }
-function makeGun(type) {
-  const g = new THREE.Group();
-  g.add(new THREE.Mesh(GUN[type].geo, M.gun));
-  return g;
 }
 
 // agents in black suits, origin at the hips
@@ -602,6 +594,7 @@ function setCode(on) {
   document.body.classList.toggle('code', on);
   for (const p of props) applyLook(p);
   for (const r of racks) setLook(r.group, on || r.matT > 0, 0.03);
+  setLook(instGroup, on || instMatT > 0, 0.02);
   refreshStatus();
 }
 function transition(fn) { if (!fade) fade = { t: 0, fn, done: false }; }
@@ -618,77 +611,225 @@ function refreshStatus() {
 }
 
 // ---------------------------------------------------------------- "Guns. Lots of guns."
-const racks = [];
-function makeRack() {
-  const g = new THREE.Group(), add = adder(g);
-  for (const sx of [-1, 1]) {
-    add(new THREE.BoxGeometry(0.06, 1.9, 0.06), M.rack, sx * 1.62, 0.95, -0.05);
-    add(new THREE.BoxGeometry(0.1, 0.03, 0.5), M.rack, sx * 1.62, 0.015, -0.05);
-  }
-  add(new THREE.BoxGeometry(3.2, 1.45, 0.025), M.board, 0, 1.1, -0.07);
-  for (const y of [0.62, 0.97, 1.33]) add(new THREE.BoxGeometry(3.2, 0.02, 0.07), M.rack, 0, y, -0.03);
-  prepMeshes(g);
+// Real models from assets/guns, normalised in Blender: grip at the origin, barrel down -Z, real-world size.
+// Guns on the racks are GPU instances; one only becomes a physics prop when it is grabbed or shot.
+const gltfLoader = new GLTFLoader();
+const GUNS = {};
+const KIND_MASS = { pistol: 1.1, smg: 2.8, rifle: 4.4 };
+let gunLib = null;
+function loadGunLibrary() {
+  if (gunLib) return gunLib;
+  gunLib = fetch('assets/guns/guns.json').then(r => r.json()).then(man => Promise.all(Object.entries(man).map(async ([key, g]) => {
+    const res = await gltfLoader.loadAsync(`assets/guns/${key}.glb`);
+    res.scene.updateMatrixWorld(true);
+    const shift = new THREE.Matrix4().makeTranslation(-g.grip[0], -g.grip[1], -g.grip[2]);
+    const parts = [];
+    res.scene.traverse(o => {
+      if (!o.isMesh) return;
+      const geo = o.geometry.clone().applyMatrix4(o.matrixWorld).applyMatrix4(shift);
+      geo.computeBoundingSphere();
+      o.material.envMapIntensity = 1.3;
+      parts.push({ geo, mat: o.material });
+    });
+    const min = new V3(...g.min), max = new V3(...g.max);
+    const half = max.clone().sub(min).multiplyScalar(0.5), mid = max.clone().add(min).multiplyScalar(0.5);
+    GUNS[key] = {
+      key, name: g.name, kind: g.kind, auto: g.auto, long: g.kind !== 'pistol', parts, min, max,
+      muzzle: new V3(...g.muzzle), eject: new V3(0.02, g.muzzle[1] - 0.008, g.muzzle[2] * (g.kind === 'pistol' ? 0.3 : 0.12)),
+      mass: KIND_MASS[g.kind], shape: box(half.x, half.y, half.z, mid.x, mid.y, mid.z),
+      rate: g.kind === 'smg' ? 0.075 : g.auto ? 0.1 : key === 'precision' ? 0.6 : 0.16,
+    };
+  }))).catch(e => { gunLib = null; throw e; });
+  return gunLib;
+}
+function makeGun(key) {
+  const g = new THREE.Group();
+  for (const p of GUNS[key].parts) g.add(new THREE.Mesh(p.geo, p.mat));
   return g;
 }
-function loadGuns() {
+function spawnGun(key, matrix, matT = 0) {
+  const o = makeGun(key), G = GUNS[key];
+  matrix.decompose(o.position, o.quaternion, _ts);
+  const p = addProp(o, { shapes: [G.shape], mass: G.mass, kind: 'gun', name: G.name, cell: 0.02, matT });
+  p.gun = G;
+  return p;
+}
+
+// freestanding double-sided armoury racks: long guns stand muzzle-up in a padded trough with the
+// barrels resting on a comb bar, pistols hang on a perforated steel panel above them
+const RACK_L = 2.4, RACK_H = 2.05;
+let rackParts = null;
+function rackGeometry() {
+  if (rackParts) return rackParts;
+  const L = RACK_L, H = RACK_H, steel = [], rubber = [];
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+    steel.push(xf(new THREE.BoxGeometry(0.04, H, 0.04), sx * L / 2, H / 2, sz * 0.21));
+    rubber.push(xf(new THREE.CylinderGeometry(0.024, 0.028, 0.02, 12), sx * L / 2, 0.01, sz * 0.21));
+  }
+  for (const sz of [-1, 1]) {
+    steel.push(xf(new THREE.BoxGeometry(L, 0.045, 0.04), 0, 0.06, sz * 0.21));
+    steel.push(xf(new THREE.BoxGeometry(L, 0.045, 0.04), 0, H - 0.022, sz * 0.21));
+    steel.push(xf(new THREE.BoxGeometry(L, 0.035, 0.035), 0, 0.62, sz * 0.21));
+    rubber.push(xf(new THREE.BoxGeometry(L, 0.012, 0.045), 0, 0.643, sz * 0.21));
+    rubber.push(xf(new THREE.BoxGeometry(L - 0.04, 0.05, 0.13), 0, 0.105, sz * 0.14));
+    steel.push(xf(new THREE.BoxGeometry(L - 0.04, 0.03, 0.02), 0, 0.68, sz * 0.012));
+  }
+  for (const sx of [-1, 1]) for (const y of [0.06, 0.62, H - 0.022]) steel.push(xf(new THREE.BoxGeometry(0.04, 0.045, 0.42), sx * L / 2, y, 0));
+  for (const sx of [-1, 1]) steel.push(xf(new THREE.BoxGeometry(0.03, H - 0.75, 0.03), sx * (L / 2 - 0.035), 0.68 + (H - 0.75) / 2, 0));
+  rackParts = {
+    steel: mergeGeometries(steel),
+    rubber: mergeGeometries(rubber),
+    panel: new THREE.BoxGeometry(L - 0.1, H - 0.77, 0.012).translate(0, 0.69 + (H - 0.77) / 2, 0),
+  };
+  return rackParts;
+}
+function rackPlate(n) {
+  const t = canvasTex(256, 32, (g, w, h) => {
+    g.fillStyle = '#16181a'; g.fillRect(0, 0, w, h);
+    g.fillStyle = '#d9d6cc'; g.font = 'bold 18px "Share Tech Mono", monospace'; g.textBaseline = 'middle';
+    g.fillText(`RACK ${String.fromCharCode(65 + n)}  //  SMALL ARMS`, 10, h / 2 + 1);
+  });
+  return new THREE.MeshStandardMaterial({ map: t, metalness: 0.4, roughness: 0.5 });
+}
+const Q_LONG = new THREE.Quaternion().setFromEuler(new THREE.Euler(Math.PI / 2, -Math.PI / 2, 0, 'YXZ'));
+const Q_PISTOL = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, -Math.PI / 2, 0));
+const Q_BACK = new THREE.Quaternion().setFromAxisAngle(UP, Math.PI);
+function placedBox(G, q) {
+  return new THREE.Box3(G.min.clone(), G.max.clone()).applyMatrix4(new THREE.Matrix4().makeRotationFromQuaternion(q));
+}
+function rackLayout(seed) {
+  const slots = [], keys = Object.keys(GUNS), L = RACK_L - 0.14;
+  const longs = keys.filter(k => GUNS[k].long), pistols = keys.filter(k => !GUNS[k].long);
+  for (const side of [1, -1]) {
+    const base = side > 0 ? new THREE.Quaternion() : Q_BACK;
+    let x = -L / 2, i = seed + (side > 0 ? 0 : 3);
+    for (;;) {
+      const key = longs[i++ % longs.length], q = base.clone().multiply(Q_LONG), b = placedBox(GUNS[key], q);
+      if (x + b.max.x - b.min.x > L / 2) break;
+      slots.push({ key, q, pos: new V3(x - b.min.x, 0.131 - b.min.y, side * 0.15 - (b.min.z + b.max.z) / 2) });
+      x += b.max.x - b.min.x + 0.035;
+    }
+    for (const [row, y] of [[0, 1.4], [1, 1.73]]) {
+      let x = -L / 2 + 0.06, j = seed * 2 + row * 3 + (side > 0 ? 0 : 1);
+      for (;;) {
+        const key = pistols[j++ % pistols.length], q = base.clone().multiply(Q_PISTOL), b = placedBox(GUNS[key], q);
+        if (x + b.max.x - b.min.x > L / 2 - 0.04) break;
+        slots.push({ key, q, pos: new V3(x - b.min.x, y, side > 0 ? 0.011 - b.min.z : -0.011 - b.max.z) });
+        x += b.max.x - b.min.x + 0.07;
+      }
+    }
+  }
+  return slots;
+}
+
+const racks = [], rackInst = {};
+const instGroup = new THREE.Group();
+scene.add(instGroup);
+const ZERO = new THREE.Matrix4().makeScale(0, 0, 0);
+let instDirty = false, instMatT = 0, gunsLoading = false;
+async function loadGuns() {
   if (racks.length) { unloadGuns(); return; }
+  if (gunsLoading) return;
+  if (!Object.keys(GUNS).length) toast('Loading the armoury...');
+  gunsLoading = true;
+  try { await loadGunLibrary(); } catch (e) { console.warn(e); toast('Could not load the gun models'); return; } finally { gunsLoading = false; }
   const f = viewYaw(), head = headPos(new V3()), fwd = new V3(-Math.sin(f), 0, -Math.cos(f));
-  const spots = [[-2.1, -0.4, 1], [-2.1, -3.8, 1], [2.1, -0.4, -1], [2.1, -3.8, -1]];
-  spots.forEach(([x, z, side], i) => {
-    const group = makeRack();
+  const rp = rackGeometry(), counts = {};
+  // an aisle of racks either side of you, like the film
+  [[-2.05, -0.9], [-2.05, -3.5], [2.05, -0.9], [2.05, -3.5]].forEach(([x, z], i) => {
+    const side = x < 0 ? 1 : -1, group = new THREE.Group(), plate = rackPlate(i);
+    group.add(new THREE.Mesh(rp.steel, M.steel), new THREE.Mesh(rp.rubber, M.rubber), new THREE.Mesh(rp.panel, M.pegboard));
+    for (const sz of [1, -1]) {
+      const m = new THREE.Mesh(new THREE.PlaneGeometry(0.42, 0.0525), plate);
+      m.position.set(0, RACK_H - 0.022, sz * 0.231);
+      if (sz < 0) m.rotation.y = Math.PI;
+      group.add(m);
+    }
+    prepMeshes(group);
     const end = new V3(x, 0, z).applyAxisAngle(UP, f).add(new V3(head.x, 0, head.z));
-    group.position.copy(end).addScaledVector(fwd, 28 + i * 3);
+    group.position.copy(end).addScaledVector(fwd, 26 + i * 2.5);
     group.rotation.y = f + side * Math.PI / 2;
+    group.updateMatrixWorld(true);
     world.add(group);
-    const rack = { group, start: group.position.clone(), end, t: -i * 0.12, matT: 1.6, guns: [] };
+    const rack = { group, start: group.position.clone(), end, t: -i * 0.15, matT: 1.7, slots: rackLayout(i * 2) };
+    for (const s of rack.slots) {
+      s.rack = rack;
+      s.local = new THREE.Matrix4().compose(s.pos, s.q, ONE);
+      s.world = new THREE.Matrix4();
+      s.idx = counts[s.key] || 0;
+      counts[s.key] = s.idx + 1;
+    }
     setLook(group, true, 0.03);
-    const hang = (type, lx, ly) => {
-      const o = makeGun(type);
-      o.position.set(lx, ly, 0.03); o.rotation.y = -Math.PI / 2;
-      const p = addProp(o, { shapes: [GUN[type].shape], mass: GUN[type].mass, kind: 'gun', name: GUN[type].name, cell: 0.02, matT: 1.6 });
-      group.attach(o);
-      o.position.set(lx, ly, 0.03); o.rotation.set(0, -Math.PI / 2, 0);
-      p.gun = GUN[type]; p.rack = rack;
-      p.body.type = CANNON.Body.KINEMATIC;
-      rack.guns.push(p);
-    };
-    for (const y of [1.42, 1.07]) for (const lx of [-1.0, 0, 1.0]) hang('rifle', lx - 0.18, y);
-    for (let k = 0; k < 8; k++) hang('pistol', -1.4 + k * 0.4, 0.72);
     racks.push(rack);
   });
+  for (const [key, n] of Object.entries(counts)) {
+    const meshes = GUNS[key].parts.map(p => {
+      const m = new THREE.InstancedMesh(p.geo, p.mat, n);
+      m.frustumCulled = false;
+      m.userData = { mat: p.mat, gunKey: key };
+      instGroup.add(m);
+      return m;
+    });
+    rackInst[key] = { meshes, slots: [] };
+  }
+  for (const r of racks) for (const s of r.slots) rackInst[s.key].slots[s.idx] = s;
+  instDirty = true;
+  instMatT = 1.7;
+  setLook(instGroup, true, 0.02);
   play('whoosh', 1, 1);
   toast('Guns. Lots of guns.');
   drawWrist();
 }
 function unloadGuns() {
-  for (const r of racks) { for (const p of [...r.guns]) removeProp(p); r.group.removeFromParent(); }
+  for (const r of racks) r.group.removeFromParent();
   racks.length = 0;
+  for (const k in rackInst) { for (const m of rackInst[k].meshes) { m.removeFromParent(); m.dispose(); } delete rackInst[k]; }
   drawWrist();
 }
-function detachFromRack(p) {
-  const r = p.rack;
-  if (!r) return;
-  world.attach(p.obj);
-  r.guns.splice(r.guns.indexOf(p), 1);
-  p.rack = null;
-  p.body.type = CANNON.Body.DYNAMIC;
+function takeSlot(s) {
+  if (!s || s.taken) return null;
+  s.taken = true;
+  instDirty = true;
+  return spawnGun(s.key, s.world.clone());
 }
 function updateRacks(dt) {
-  const _p = new V3(), _q = new THREE.Quaternion();
   for (const r of racks) {
     if (r.t < 1) {
-      r.t = Math.min(1, r.t + dt / 1.3);
-      const e = 1 - (1 - clamp(r.t, 0, 1)) ** 4;
-      r.group.position.lerpVectors(r.start, r.end, e);
+      r.t = Math.min(1, r.t + dt / 1.4);
+      r.group.position.lerpVectors(r.start, r.end, 1 - (1 - clamp(r.t, 0, 1)) ** 4);
+      r.group.updateMatrixWorld(true);
+      instDirty = true;
     }
     if (r.matT > 0 && (r.matT -= dt) <= 0) setLook(r.group, codeMode, 0.03);
-    r.group.updateMatrixWorld(true);
-    for (const p of r.guns) {
-      p.obj.getWorldPosition(_p); p.obj.getWorldQuaternion(_q);
-      p.body.position.copy(_p); p.body.quaternion.copy(_q);
-    }
+  }
+  if (instMatT > 0 && (instMatT -= dt) <= 0) setLook(instGroup, codeMode, 0.02);
+  if (!instDirty) return;
+  instDirty = false;
+  for (const key in rackInst) {
+    const { meshes, slots } = rackInst[key];
+    slots.forEach((s, i) => {
+      if (!s.taken) s.world.multiplyMatrices(s.rack.group.matrixWorld, s.local);
+      for (const m of meshes) m.setMatrixAt(i, s.taken ? ZERO : s.world);
+    });
+    for (const m of meshes) { m.instanceMatrix.needsUpdate = true; m.computeBoundingSphere(); }
   }
 }
+// what a ray hit: a loose prop, or a gun still on a rack (turned into a prop only when used)
+function targetOf(hit) {
+  if (hit.object.isInstancedMesh) {
+    const s = rackInst[hit.object.userData.gunKey]?.slots[hit.instanceId];
+    return s && !s.taken ? { slot: s, name: GUNS[s.key].name, hit } : null;
+  }
+  const p = propOf(hit.object);
+  return p ? { prop: p, name: p.name, hit } : null;
+}
+function pick(far = 25, skip = null) {
+  raycaster.far = far;
+  const objs = props.filter(p => !p.hold && p !== skip).map(p => p.obj).concat(instGroup.children);
+  for (const h of raycaster.intersectObjects(objs, true)) { const t = targetOf(h); if (t) return t; }
+  return null;
+}
+const realize = t => t ? (t.prop || takeSlot(t.slot)) : null;
 
 function loadAgents() {
   for (const p of props.filter(p => p.kind === 'agent')) removeProp(p);
@@ -748,7 +889,6 @@ function holderMatrix(by, p, out) {
 }
 function grab(p, by, near) {
   if (p.hold) release(p);
-  if (p.rack) detachFromRack(p);
   p.body.type = CANNON.Body.KINEMATIC;
   p.body.allowSleep = false;
   p.body.velocity.setZero(); p.body.angularVelocity.setZero();
@@ -757,7 +897,7 @@ function grab(p, by, near) {
   const offset = new THREE.Matrix4().copy(H).invert().multiply(p.obj.matrixWorld);
   if (p.kind === 'gun') {
     offset.identity();
-    if (by === 'cam') offset.setPosition(0.2, -0.19, -0.48);
+    if (by === 'cam') offset.setPosition(...(p.gun.long ? [0.2, -0.25, -0.46] : [0.2, -0.19, -0.48]));
   } else if (by === 'cam') offset.setPosition(0, -0.12, -(0.45 + p.radius));
   else if (!near) offset.setPosition(0, 0, -(p.radius * 0.7 + 0.03));
   p.hold = { by, offset, t: near ? 1 : 0, fromP: p.obj.position.clone(), fromQ: p.obj.quaternion.clone(), recoil: 0 };
@@ -824,9 +964,8 @@ const flashTex = canvasTex(64, 64, (g) => {
 const raycaster = new THREE.Raycaster();
 function aimPoint(out) {
   raycaster.setFromCamera({ x: 0, y: 0 }, camera);
-  raycaster.far = 100;
-  const hit = raycaster.intersectObjects(props.filter(p => !p.hold).map(p => p.obj), true)[0];
-  return hit ? out.copy(hit.point) : out.copy(raycaster.ray.origin).addScaledVector(raycaster.ray.direction, 60);
+  const t = pick(100);
+  return t ? out.copy(t.hit.point) : out.copy(raycaster.ray.origin).addScaledVector(raycaster.ray.direction, 60);
 }
 function spawnFlash(pos, size, life) {
   const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: flashTex, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true }));
@@ -844,7 +983,7 @@ function spawnRipple(pos, dir, grow = 5, life = 1.3) {
 }
 function fire(p) {
   if (p.cool > 0) return;
-  p.cool = p.gun.auto ? 0.1 : 0.16;
+  p.cool = p.gun.rate;
   p.obj.updateMatrixWorld();
   const muzzle = p.obj.localToWorld(p.gun.muzzle.clone());
   const dir = p.hold?.by === 'cam' ? aimPoint(new V3()).sub(muzzle).normalize() : new V3(0, 0, -1).transformDirection(p.obj.matrixWorld);
@@ -856,7 +995,7 @@ function fire(p) {
   mesh.lookAt(_v2.copy(muzzle).sub(dir));
   scene.add(mesh);
   bullets.push({ mesh, trail, pos: muzzle.clone(), dir, speed: 120, dist: 0, ripAcc: 0, owner: p, life: 3 });
-  spawnFlash(muzzle.clone().addScaledVector(dir, 0.02), p.gun.auto ? 0.16 : 0.12, 0.05);
+  spawnFlash(muzzle.clone().addScaledVector(dir, 0.02), p.gun.long ? 0.16 : 0.12, 0.05);
   spawnRipple(muzzle, dir, 3, 0.6);
   // brass flies out the right side
   const c = new THREE.Mesh(casingGeo, M.brassCase);
@@ -865,26 +1004,29 @@ function fire(p) {
   scene.add(c);
   casings.push({ m: c, v: right.multiplyScalar(rand(1.6, 2.4)).addScaledVector(up, rand(1.2, 2)), spin: new V3(rand(-20, 20), rand(-20, 20), rand(-20, 20)), life: 2.5 });
   if (p.hold) p.hold.recoil = p.gun.auto ? 0.5 : 1;
-  play('shot', (0.3 + 0.7 * timeScale) * rand(0.95, 1.05), p.gun.auto ? 0.6 : 0.8);
+  play('shot', (0.3 + 0.7 * timeScale) * rand(0.95, 1.05) * (p.gun.kind === 'smg' ? 1.15 : p.gun.kind === 'rifle' ? 0.85 : 1), p.gun.kind === 'smg' ? 0.6 : 0.85);
   pulse(p.hold?.by, 0.6, 40);
 }
 function hitProp(p, point, dir) {
   if (p.hold) return;
-  if (p.rack) detachFromRack(p);
   const j = clamp(p.body.mass * 3, 0.04, 50);
   p.body.wakeUp();
   p.body.applyImpulse(new CANNON.Vec3(dir.x * j, dir.y * j, dir.z * j), new CANNON.Vec3(point.x - p.body.position.x, point.y - p.body.position.y, point.z - p.body.position.z));
 }
 function updateBullets(dt, sdt) {
-  const targets = props.map(p => p.obj);
+  const targets = props.map(p => p.obj).concat(instGroup.children, racks.map(r => r.group));
   for (let i = bullets.length - 1; i >= 0; i--) {
     const b = bullets[i];
     const step = b.speed * sdt;
     raycaster.set(b.pos, b.dir);
     raycaster.far = step;
-    const hit = raycaster.intersectObjects(targets, true).find(h => propOf(h.object) !== b.owner);
+    const hit = raycaster.intersectObjects(targets, true).find(h => h.object.isInstancedMesh ? !rackInst[h.object.userData.gunKey]?.slots[h.instanceId]?.taken : propOf(h.object) !== b.owner);
     let end = null;
-    if (hit) { end = hit.point; hitProp(propOf(hit.object), hit.point, b.dir); }
+    if (hit) {
+      end = hit.point;
+      const t = targetOf(hit), p = t && realize(t);
+      if (p) hitProp(p, hit.point, b.dir);
+    }
     else if (b.dir.y < 0 && b.pos.y + b.dir.y * step < 0) end = b.pos.clone().addScaledVector(b.dir, -b.pos.y / b.dir.y);
     if (end) {
       spawnFlash(end, 0.08, 0.04);
@@ -1033,7 +1175,6 @@ function pulse(side, strength, ms) {
   const a = side && hands[side]?.src.gamepad?.hapticActuators?.[0];
   if (a?.pulse) a.pulse(strength, ms);
 }
-const grabTargets = () => props.map(p => p.obj);
 function rayFrom(obj) {
   raycaster.ray.origin.setFromMatrixPosition(obj.matrixWorld);
   raycaster.ray.direction.set(0, 0, -1).transformDirection(obj.matrixWorld);
@@ -1045,9 +1186,14 @@ function nearestProp(h) {
   for (const p of props) {
     if (p.hold?.by === h.side) continue;
     const d = _box3.setFromObject(p.obj).distanceToPoint(_v);
-    if (d < bd) { bd = d; best = p; }
+    if (d < bd) { bd = d; best = { prop: p }; }
   }
-  return best;
+  for (const k in rackInst) for (const s of rackInst[k].slots) {
+    if (s.taken) continue;
+    const d = _v2.setFromMatrixPosition(s.world).distanceTo(_v) - 0.04;
+    if (d < bd) { bd = d; best = { slot: s }; }
+  }
+  return realize(best);
 }
 function snapTurn(a) {
   const head = headPos(new V3());
@@ -1103,8 +1249,7 @@ function xrInput(dt) {
       let p = nearestProp(h), near = !!p;
       if (!p) {
         rayFrom(h.ray);
-        raycaster.far = 25;
-        p = propOf(raycaster.intersectObjects(grabTargets(), true)[0]?.object);
+        p = realize(pick(25));
       }
       if (p) { grab(p, side, near); pulse(side, 0.4, 30); }
     }
@@ -1122,9 +1267,8 @@ function xrInput(dt) {
       if (side === 'right' && menuHit) { len = menuHit.distance; hot = true; }
       else {
         rayFrom(h.ray);
-        raycaster.far = 25;
-        const hit = raycaster.intersectObjects(grabTargets(), true)[0];
-        if (hit) { len = hit.distance; hot = true; }
+        const t = pick(25);
+        if (t) { len = t.hit.distance; hot = true; }
       }
       h.laser.scale.z = len;
       h.laser.material.opacity = hot ? 0.9 : 0.3;
@@ -1149,9 +1293,7 @@ addEventListener('mousemove', e => {
 });
 function deskTarget() {
   raycaster.setFromCamera({ x: 0, y: 0 }, camera);
-  raycaster.far = 25;
-  const hit = raycaster.intersectObjects(props.filter(p => !p.hold).map(p => p.obj), true)[0];
-  return hit ? propOf(hit.object) : null;
+  return pick(25);
 }
 canvas.addEventListener('mousedown', e => {
   if (!locked) return;
@@ -1163,7 +1305,7 @@ canvas.addEventListener('mousedown', e => {
   else if (p) {
     const fwd = new V3(0, 0, -1).transformDirection(camera.matrixWorld);
     release(p, fwd.multiplyScalar(clamp(30 / p.body.mass, 4, 12)).add(new V3(0, 1, 0)));
-  } else { const t = deskTarget(); if (t) grab(t, 'cam', false); }
+  } else { const t = realize(deskTarget()); if (t) grab(t, 'cam', false); }
 });
 let mouseHeld = false;
 addEventListener('mouseup', () => { mouseHeld = false; });
@@ -1172,7 +1314,7 @@ addEventListener('keydown', e => {
   if (!locked) return;
   keys[e.code] = true;
   if (e.repeat) return;
-  if (e.code === 'KeyE') { if (deskHeld) release(deskHeld, new V3()); else { const t = deskTarget(); if (t) grab(t, 'cam', false); } }
+  if (e.code === 'KeyE') { if (deskHeld) release(deskHeld, new V3()); else { const t = realize(deskTarget()); if (t) grab(t, 'cam', false); } }
   if (e.code === 'Digit1') loadGuns();
   if (e.code === 'Digit2') loadAgents();
   if (e.code === 'KeyC' || e.code === 'Digit3') toggleCode();
@@ -1258,7 +1400,7 @@ renderer.setAnimationLoop((time) => {
   updateHeld(dt);
   physics.step(1 / 90, sdt, 6);
   for (const p of props) {
-    if (!p.hold && !p.rack) { p.obj.position.copy(p.body.interpolatedPosition); p.obj.quaternion.copy(p.body.interpolatedQuaternion); }
+    if (!p.hold) { p.obj.position.copy(p.body.interpolatedPosition); p.obj.quaternion.copy(p.body.interpolatedQuaternion); }
     if (p.matT > 0 && (p.matT -= dt) <= 0) applyLook(p);
     if (p.body.position.y < -5) { p.body.position.y = 2; p.body.velocity.setZero(); }
   }
@@ -1292,7 +1434,8 @@ renderer.setAnimationLoop((time) => {
 document.fonts?.ready.then(() => { drawWrist(); });
 drawWrist();
 refreshStatus();
-window.construct = { loadGuns, loadAgents, setCode, toggleBT, resetConstruct, grab, release, fire, props, P, rig };
+loadGunLibrary().catch(e => console.warn('gun models', e));
+window.construct = { renderer, takeSlot, rackInst, GUNS, loadGuns, loadAgents, setCode, toggleBT, resetConstruct, grab, release, fire, props, P, rig };
 </script>
 </body>
 </html>
