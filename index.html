@@ -795,8 +795,10 @@ async function loadGuns() {
   const head = headPos(new V3());
   armoury = { origin: new V3(head.x, 0, head.z), yaw: viewYaw(), cell: null, racks: [], live: new Map(), taken: new Set(), t: 0, matT: 1.8, liveT: 0, leaveT: null };
   // everything else in the Construct is taken away to make room
-  sweepAway([...props]);
+  const swept = sweepAway([...props]);
   pendingPills.length = 0;
+  armoury.t = swept ? -SWEEP_WAIT : 0;
+  armouryGroup.visible = !swept;
   armoury.meshes = makeArmouryMeshes();
   for (const k in GUNS) {
     liveInst[k] = { slots: [], meshes: GUNS[k].parts.map(p => {
@@ -812,7 +814,7 @@ async function loadGuns() {
   for (const c of [0.03, 0.02]) codeMatFor(c).uniforms.fadeDist.value = ARM.R - 3;
   setLook(armouryGroup, true, 0.03);
   updateArmoury(0, true);
-  play('whoosh', 1, 1);
+  if (!swept) play('whoosh', 1, 1);
   toast('Guns. Lots of guns.');
   drawWrist();
 }
@@ -821,11 +823,9 @@ async function loadGuns() {
 function unloadGuns() {
   const a = armoury;
   if (!a || a.leaveT !== null) return;
-  a.leaveT = 0;
   a.live = new Map();
   writeLive(a);
-  sweepAway([...props]);
-  play('whoosh', 0.8, 1);
+  a.leaveT = sweepAway([...props]) ? -SWEEP_WAIT : 0;
   drawWrist();
 }
 function finishUnload() {
@@ -921,9 +921,11 @@ function updateArmoury(dt, force = false) {
     a.leaveT += dt;
     writeField(a);
     if (a.leaveT > 1.5) { finishUnload(); restoreT = 0.25; }
+    if (a.leaveT >= 0 && a.leaveT - dt < 0) play('whoosh', 0.8, 1);
     return;
   }
   const arriving = a.t < 2.2;
+  if (a.t < 0 && a.t + dt >= 0) { armouryGroup.visible = true; play('whoosh', 1, 1); }
   a.t += dt;
   if (a.matT > 0 && (a.matT -= dt) <= 0) { setLook(armouryGroup, codeMode, 0.03); setLook(instGroup, codeMode, 0.02); }
   let fieldChanged = rebuildField(a, me) || force;
@@ -962,6 +964,7 @@ const realize = t => t ? (t.prop || takeSlot(t.slot)) : null;
 
 
 // props being carried off: each slides away to its side of your view and accelerates into the distance
+const SWEEP_TIME = 1.0, SWEEP_WAIT = 1.25;
 const sweeping = [];
 let restoreT = 0;
 function sweepAway(list) {
@@ -973,20 +976,21 @@ function sweepAway(list) {
     props.splice(props.indexOf(p), 1);
     const side = Math.sign(_v.subVectors(p.obj.position, head).dot(right)) || (n % 2 ? 1 : -1);
     sweeping.push({
-      obj: p.obj, from: p.obj.position.clone(), spin: side * rand(0.4, 0.9), t: -n * 0.05,
+      obj: p.obj, from: p.obj.position.clone(), spin: side * rand(0.4, 0.9), t: -Math.min(n * 0.03, 0.2),
       to: right.clone().multiplyScalar(side * rand(7, 11)).addScaledVector(fwd, rand(20, 32)).add(new V3(0, rand(0.5, 2), 0)),
     });
   });
   if (list.length) play('whoosh', 1.2, 0.8);
+  return list.length > 0;
 }
 function updateSweep(dt) {
   for (let i = sweeping.length - 1; i >= 0; i--) {
     const w = sweeping[i];
     w.t += dt;
-    const e = clamp(w.t / 1.3, 0, 1) ** 3;
+    const e = clamp(w.t / SWEEP_TIME, 0, 1) ** 2.5;
     w.obj.position.copy(w.from).addScaledVector(w.to, e);
     w.obj.rotation.y += w.spin * e * dt * 3;
-    if (w.t > 1.3) { w.obj.removeFromParent(); sweeping.splice(i, 1); }
+    if (w.t > SWEEP_TIME) { w.obj.removeFromParent(); sweeping.splice(i, 1); }
   }
   if (restoreT > 0 && (restoreT -= dt) <= 0) restoreConstruct();
 }
