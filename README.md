@@ -1,0 +1,38 @@
+# The Construct
+
+A Matrix-style "Construct" playground for the Meta Quest 3, made as a single HTML file using three.js, WebXR and cannon-es physics.
+
+It's an endless white room with two red leather wingback chairs and the old Deep Focus TV between them. In it you can:
+
+- **Load guns:** gun racks slide in around you, and every pistol and rifle on them can be taken down and fired
+- **Load agents:** three agents in suits and sunglasses appear, and they fall over when you shoot them
+- **Bullet time:** slow-motion bullets with trails, expanding rings and flying brass
+- **Code vision:** everything turns into green falling code
+- **Red pill / blue pill:** hold a pill to your mouth to take it
+- **There is no spoon:** hold the spoon near your face and watch it bend
+
+## Run it
+
+```bash
+python -m http.server 8518
+```
+
+Open http://localhost:8518 to play on desktop.
+
+To play on a Quest 3, connect the headset over USB and run `adb reverse tcp:8518 tcp:8518`. Then open `localhost:8518` in the Quest Browser and press **ENTER VR**.
+
+## Controls
+
+| | Quest 3 | Desktop |
+|---|---|---|
+| Move | Left stick | WASD (Shift to run) |
+| Turn | Right stick (snap) | Mouse |
+| Grab / pull from a distance | Grip | E |
+| Fire / throw / take a pill | Trigger | Click |
+| Bullet time | X | T |
+| Code vision | A | C |
+| Load guns | B | 1 |
+| Load agents | Wrist menu | 2 |
+| Wrist menu / reset | Y | R resets |
+
+A fan project. It isn't affiliated with Warner Bros. or The Matrix franchise.

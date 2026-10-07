@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "the-matrix",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "http.server", "8518"],
+      "port": 8518
+    }
+  ]
+}
