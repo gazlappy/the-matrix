@@ -756,7 +756,7 @@ function bakeImpostors() {
 
 // ---- the endless armoury: a grid of racks around where you stood when you loaded it.
 // Only racks within ARM.R exist (fog hides the edge); the faces within ARM.LIVE hold real guns.
-const ARM = { PX: 2.85, PZ: 2.55, R: 27, LIVE: 3.4, KEEP: 14, CAP: 420, GUN_CAP: 160, CLEAR: 2.4 };
+const ARM = { PX: 2.85, PZ: 2.55, R: 27, LIVE: 3.4, KEEP: 14, CAP: 420, GUN_CAP: 160 };
 const armouryGroup = new THREE.Group();   // frames, panels, shadows and impostors
 const instGroup = new THREE.Group();      // real guns on the live rack faces
 scene.add(armouryGroup, instGroup);
@@ -788,13 +788,15 @@ function makeArmouryMeshes() {
 }
 async function loadGuns() {
   if (armoury) { unloadGuns(); return; }
-  if (gunsLoading) return;
+  if (gunsLoading || restoreT > 0) return;
   if (!Object.keys(GUNS).length) toast('Loading the armoury...');
   gunsLoading = true;
   try { await loadGunLibrary(); } catch (e) { console.warn(e); toast('Could not load the gun models'); return; } finally { gunsLoading = false; }
   const head = headPos(new V3());
-  armoury = { origin: new V3(head.x, 0, head.z), yaw: viewYaw(), cell: null, racks: [], live: new Map(), taken: new Set(), t: 0, matT: 1.8, liveT: 0 };
-  armoury.furniture = toLocal(armoury, new V3(0, 0, -1.6), new V3());
+  armoury = { origin: new V3(head.x, 0, head.z), yaw: viewYaw(), cell: null, racks: [], live: new Map(), taken: new Set(), t: 0, matT: 1.8, liveT: 0, leaveT: null };
+  // everything else in the Construct is taken away to make room
+  sweepAway([...props]);
+  pendingPills.length = 0;
   armoury.meshes = makeArmouryMeshes();
   for (const k in GUNS) {
     liveInst[k] = { slots: [], meshes: GUNS[k].parts.map(p => {
@@ -814,7 +816,19 @@ async function loadGuns() {
   toast('Guns. Lots of guns.');
   drawWrist();
 }
+// putting the guns away: the racks rush off down the aisles, loose guns are swept away,
+// then the chairs and TV load back in
 function unloadGuns() {
+  const a = armoury;
+  if (!a || a.leaveT !== null) return;
+  a.leaveT = 0;
+  a.live = new Map();
+  writeLive(a);
+  sweepAway([...props]);
+  play('whoosh', 0.8, 1);
+  drawWrist();
+}
+function finishUnload() {
   if (!armoury) return;
   for (const m of [...armouryGroup.children, ...instGroup.children]) { m.removeFromParent(); m.dispose(); }
   for (const k in liveInst) delete liveInst[k];
@@ -833,8 +847,6 @@ function rebuildField(a, me) {
   for (let i = ci - ni; i <= ci + ni; i++) for (let j = cj - nj; j <= cj + nj; j++) {
     const gx = (i + 0.5) * ARM.PX, gz = j * ARM.PZ;
     if (Math.hypot(gx - me.x, gz - me.z) > ARM.R) continue;
-    const dz = Math.max(0, Math.abs(gz - a.furniture.z) - RACK_L / 2);
-    if (Math.hypot(gx - a.furniture.x, dz) < ARM.CLEAR) continue;
     a.racks.push({ i, j, gx, gz, d: Math.hypot(gx, gz), v: [cellHash(i, j, 1) % IMP_VARIANTS, cellHash(i, j, -1) % IMP_VARIANTS] });
     if (a.racks.length >= ARM.CAP) break;
   }
@@ -845,7 +857,9 @@ function writeField(a) {
   a.racks.forEach((r, n) => {
     // on loading, racks rush in from far down the aisle, nearest first
     const e = 1 - (1 - clamp(a.t * 1.6 - r.d * 0.035, 0, 1)) ** 4;
-    rackMatrix(a, r.gx, r.gz - 34 * (1 - e), _am);
+    // and on putting away, they accelerate off into the distance, nearest last
+    const l = a.leaveT === null ? 0 : clamp(a.leaveT * 1.5 - (ARM.R - r.d) * 0.02, 0, 1) ** 2;
+    rackMatrix(a, r.gx, r.gz - 34 * (1 - e) - 45 * l, _am);
     for (const m of frames) m.setMatrixAt(n, _am);
     blob.setMatrixAt(n, _am);
     r.impIdx = [];
@@ -903,6 +917,12 @@ function updateArmoury(dt, force = false) {
   const a = armoury;
   if (!a) return;
   const me = toLocal(a, headPos(_al), new V3());
+  if (a.leaveT !== null) {
+    a.leaveT += dt;
+    writeField(a);
+    if (a.leaveT > 1.5) { finishUnload(); restoreT = 0.25; }
+    return;
+  }
   const arriving = a.t < 2.2;
   a.t += dt;
   if (a.matT > 0 && (a.matT -= dt) <= 0) { setLook(armouryGroup, codeMode, 0.03); setLook(instGroup, codeMode, 0.02); }
@@ -941,6 +961,45 @@ function pick(far = 25, skip = null) {
 const realize = t => t ? (t.prop || takeSlot(t.slot)) : null;
 
 
+// props being carried off: each slides away to its side of your view and accelerates into the distance
+const sweeping = [];
+let restoreT = 0;
+function sweepAway(list) {
+  const f = viewYaw(), head = headPos(new V3());
+  const right = new V3(Math.cos(f), 0, -Math.sin(f)), fwd = new V3(-Math.sin(f), 0, -Math.cos(f));
+  list.forEach((p, n) => {
+    if (p.hold) release(p);
+    physics.removeBody(p.body);
+    props.splice(props.indexOf(p), 1);
+    const side = Math.sign(_v.subVectors(p.obj.position, head).dot(right)) || (n % 2 ? 1 : -1);
+    sweeping.push({
+      obj: p.obj, from: p.obj.position.clone(), spin: side * rand(0.4, 0.9), t: -n * 0.05,
+      to: right.clone().multiplyScalar(side * rand(7, 11)).addScaledVector(fwd, rand(20, 32)).add(new V3(0, rand(0.5, 2), 0)),
+    });
+  });
+  if (list.length) play('whoosh', 1.2, 0.8);
+}
+function updateSweep(dt) {
+  for (let i = sweeping.length - 1; i >= 0; i--) {
+    const w = sweeping[i];
+    w.t += dt;
+    const e = clamp(w.t / 1.3, 0, 1) ** 3;
+    w.obj.position.copy(w.from).addScaledVector(w.to, e);
+    w.obj.rotation.y += w.spin * e * dt * 3;
+    if (w.t > 1.3) { w.obj.removeFromParent(); sweeping.splice(i, 1); }
+  }
+  if (restoreT > 0 && (restoreT -= dt) <= 0) restoreConstruct();
+}
+// a fresh chair scene, materialising out of the code
+function restoreConstruct() {
+  for (const p of [...props]) removeProp(p);
+  pendingPills.length = 0;
+  buildConstruct();
+  for (const p of props) { p.matT = rand(0.5, 1.3); applyLook(p); }
+  play('whoosh', 1.3, 0.7);
+  toast('Construct reloaded.');
+}
+
 function loadAgents() {
   for (const p of props.filter(p => p.kind === 'agent')) removeProp(p);
   const f = viewYaw(), head = headPos(new V3());
@@ -955,25 +1014,13 @@ function loadAgents() {
 }
 
 function resetConstruct() {
-  for (const p of [...props]) if (!p.home) removeProp(p);
-  unloadGuns();
-  for (const p of props) {
-    if (p.hold) release(p);
-    p.obj.position.copy(p.home.p); p.obj.quaternion.copy(p.home.q);
-    p.body.position.copy(p.home.p); p.body.quaternion.copy(p.home.q);
-    p.body.velocity.setZero(); p.body.angularVelocity.setZero();
-    p.body.type = CANNON.Body.DYNAMIC; p.body.wakeUp();
-    p.matT = rand(0.5, 1.2); applyLook(p);
-  }
-  spoon.bend = 0; bendSpoon(spoon, 0); spoon.told = false;
-  spawnPill(true, pillSpot(true), 1); spawnPill(false, pillSpot(false), 1);
-  pendingPills.length = 0;
   for (const b of bullets) b.mesh.removeFromParent();
   bullets.length = 0;
   if (btOn) toggleBT();
   if (codeMode) setCode(false);
-  play('whoosh', 1.3, 0.7);
-  toast('Construct reloaded.');
+  // with the armoury out, put it away first; the chairs come back once it has gone
+  if (armoury) unloadGuns();
+  else if (restoreT <= 0) restoreConstruct();
 }
 
 // ---------------------------------------------------------------- player & head
@@ -1506,6 +1553,7 @@ renderer.setAnimationLoop((time) => {
   if (xrOn) xrInput(dt); else deskInput(dt);
   for (const p of props) if (p.cool > 0) p.cool -= dt;
   updateArmoury(dt);
+  updateSweep(dt);
   updateHeld(dt);
   physics.step(1 / 90, sdt, 6);
   for (const p of props) {
