@@ -19,7 +19,7 @@ python -m http.server 8518
 
 Open http://localhost:8518 to play on desktop.
 
-To play on a Quest 3, connect the headset over USB and run `adb reverse tcp:8518 tcp:8518`. Then open `localhost:8518` in the Quest Browser and press **ENTER VR**.
+To play on a Quest 3 over USB, plug the headset in and run `play-on-quest.bat`. It waits for the headset, sets up `adb reverse` and starts the server. Then open `localhost:8518` in the Quest Browser and press **ENTER VR**. The script uses SideQuest's adb if adb isn't on your PATH.
 
 ## Controls
 
