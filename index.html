@@ -1830,8 +1830,9 @@ function buildStreet(P) {
     P.group.add(shadows);
     for (let i = 0; i < CROWD; i++) {
       // most of the crowd is on your pavement; the far side just needs to look busy
-      const side = i < NEAR_SIDE ? -1 : 1, dir = Math.random() < 0.5 ? 1 : -1;
-      const x = laneX(side, dir);
+      // and on your pavement they all come towards you: you walk against the flow, like the film
+      const side = i < NEAR_SIDE ? -1 : 1, dir = side < 0 ? 1 : Math.random() < 0.5 ? 1 : -1;
+      const x = side < 0 ? -rand(IN + 0.15, OUT - 0.15) : laneX(side, dir);
       people.push({ type: i % types.length, side, dir, home: x, x, z: rand(Z1, Z0), want: rand(1.1, 1.55), speed: 1.3, phase: Math.random() });
     }
     // the woman in the red dress walks towards you, through the crowd
