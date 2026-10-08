@@ -66,9 +66,23 @@ For use here, each one was:
 
 - converted from FBX to GLB in Blender, with the crowd meshes decimated to half the triangles
 - given textures scaled down to 1024 / 512 px JPG and PNG
-- in the case of Female_Adult_11, recoloured (red dress, blonde hair) for the woman in the red dress
+- in the case of Female_Party_01, repainted (a short red dress, black boots, red lips) for the woman in the red dress; she also gets a skirt mesh made in code
 
 The crowd's walks are baked at load time into vertex animation textures.
+
+## Sounds: CC0 (public domain)
+
+| File | Source |
+|---|---|
+| sounds/pistol.ogg | Walther PPQ 9mm, X_39P |
+| sounds/heavy.ogg | 1911 .45, A_42P (used for the Desert Eagle) |
+| sounds/revolver.ogg | Smith & Wesson 642 .38, V_27P |
+| sounds/smg.ogg | Carl Gustav M45 9mm, G_31P (also muffled in code for the MP5SD) |
+| sounds/rifle.ogg | AR-15 5.56, D_32P |
+| sounds/sniper.ogg | Tikka T3 .30-06, W_29P |
+| sounds/whoosh.ogg | swosh-40, slowed and given a reversed lead-in |
+
+The gunshots are from [The Free Firearm Sound Library](https://opengameart.org/content/the-free-firearm-sound-library) (Ben Jaszczak and team, CC0): one near-distance shot cut from each recording, mixed to mono, and saved as Ogg Vorbis. The whoosh is from [Swish - bamboo stick weapon swhoshes](https://opengameart.org/node/2242) by qubodup (CC0). The other sounds (casings, impacts, the freeze, clicks) are synthesised in code.
 
 ## Hands: MIT
 

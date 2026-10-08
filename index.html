@@ -590,7 +590,7 @@ buildConstruct();
 
 // ---------------------------------------------------------------- audio (all synthesised, no recordings)
 let AC = null, master = null;
-const SFX = {}, SFX_GAIN = { shot: 1, clink: 0.45, clank: 0.8, thud: 0.9, whoosh: 0.4, freeze: 0.9, tick: 0.25, gulp: 0.5 };
+const SFX = {}, SFX_GAIN = { shot: 1, pistol: 1, heavy: 1, revolver: 1, smg: 0.9, smg_sd: 0.45, rifle: 1, sniper: 1, clink: 0.45, clank: 0.8, thud: 0.9, whoosh: 0.6, freeze: 0.9, tick: 0.25, gulp: 0.5 };
 function initAudio() {
   if (AC) { AC.resume(); return; }
   AC = new AudioContext();
@@ -650,7 +650,26 @@ async function render(secs, build, { room = 0, roomSecs = 1.2, roomDecay = 5, br
   for (let c = 0; c < buf.numberOfChannels; c++) { const d = buf.getChannelData(c); for (let i = 0; i < d.length; i++) d[i] *= 0.9 / pk; }
   return buf;
 }
+// Real recordings (CC0, see assets/CREDITS.md): gunshots from The Free Firearm Sound Library, the whoosh from a
+// recorded swish. They're dry, close-up outdoor recordings, so each gets a little of the room added when it loads.
+const RECORDED = { pistol: 0.22, heavy: 0.25, revolver: 0.22, smg: 0.18, rifle: 0.2, sniper: 0.15, whoosh: 0.1 };
+const SHOT_SOUND = { p226: 'pistol', p320: 'pistol', p228: 'pistol', glock19: 'pistol', deagle: 'heavy', revolver: 'revolver',
+  mp5: 'smg', mpx: 'smg', mp5sd: 'smg_sd', mk14: 'rifle', mdr: 'rifle', m21: 'sniper', precision: 'sniper' };
+async function loadRecording(name, room, lowpass = 0) {
+  const data = await (await fetch(`assets/sounds/${name}.ogg`)).arrayBuffer();
+  const src = await AC.decodeAudioData(data);
+  return render(src.duration + 0.6, ({ ctx, out, filt }) => {
+    const n = ctx.createBufferSource(); n.buffer = src;
+    if (lowpass) n.connect(filt('lowpass', lowpass)).connect(out); else n.connect(out);
+    n.start(0);
+  }, { room, roomSecs: 1, roomDecay: 5, bright: 0.6 });
+}
 async function buildSounds() {
+  await Promise.all(Object.entries(RECORDED).map(async ([n, room]) => {
+    try { SFX[n] = await loadRecording(n, room); } catch (e) { console.warn('sound', n, e); }
+  }));
+  // the suppressed MP5: the same SMG with the bang muffled
+  try { SFX.smg_sd = await loadRecording('smg', 0.12, 1400); } catch (e) { }
   // a pistol: the supersonic crack, the muzzle blast, the low punch, the slide cycling, and the room answering
   SFX.shot = await render(1.4, ({ ctx, out, noise, filt, env }) => {
     const crack = noise(0.03); env(crack.connect(filt('highpass', 2500)), 0, 1.6, 0.004).connect(out); crack.start(0);
@@ -680,13 +699,6 @@ async function buildSounds() {
     const n = noise(0.1); env(n.connect(filt('lowpass', 900)), 0, 0.9, 0.018).connect(out); n.start(0);
     const slap = noise(0.02); env(slap.connect(filt('bandpass', 1800, 1)), 0, 0.3, 0.004).connect(out); slap.start(0);
   }, { room: 0.2, roomSecs: 0.7, roomDecay: 7 });
-  // a short rush of air for things appearing, sliding away and loading: quick in, quick out, no long swell
-  SFX.whoosh = await render(0.9, ({ ctx, noise, filt, out }) => {
-    const n = noise(0.9), bp = filt('bandpass', 500, 1.4), g = ctx.createGain();
-    bp.frequency.setValueAtTime(350, 0); bp.frequency.exponentialRampToValueAtTime(2600, 0.28); bp.frequency.exponentialRampToValueAtTime(900, 0.6);
-    g.gain.setValueAtTime(0, 0); g.gain.linearRampToValueAtTime(0.9, 0.22); g.gain.setTargetAtTime(0, 0.26, 0.08);
-    n.connect(bp).connect(g).connect(out); n.start(0);
-  }, { room: 0.15, roomSecs: 0.6, roomDecay: 6 });
   // time stopping: a deep tape-stop drop and a hollow ring
   SFX.freeze = await render(2.2, ({ ctx, noise, filt, env, mode, out }) => {
     const o = ctx.createOscillator(); o.type = 'triangle'; o.frequency.setValueAtTime(220, 0); o.frequency.exponentialRampToValueAtTime(28, 0.7);
@@ -2599,7 +2611,9 @@ function fire(p) {
   spawnRipple(muzzle, dir, 3, 0.6);
   spawnCasing(p);
   if (p.hold) kickRecoil(p);
-  play('shot', (0.3 + 0.7 * timeScale) * rand(0.95, 1.05) * (p.gun.kind === 'smg' ? 1.15 : p.gun.kind === 'rifle' ? 0.85 : 1), p.gun.kind === 'smg' ? 0.6 : 0.85);
+  const snd = SHOT_SOUND[p.gun.key];
+  if (SFX[snd]) play(snd, (0.3 + 0.7 * timeScale) * rand(0.97, 1.03), p.gun.auto ? 0.75 : 0.9);
+  else play('shot', (0.3 + 0.7 * timeScale) * rand(0.95, 1.05) * (p.gun.kind === 'smg' ? 1.15 : p.gun.kind === 'rifle' ? 0.85 : 1), p.gun.kind === 'smg' ? 0.6 : 0.85);
   pulse(p.hold?.by, 0.6, 40);
 }
 // Recoil: each shot kicks the gun back into your hand and flips the muzzle up, then it springs back. It's a damped
