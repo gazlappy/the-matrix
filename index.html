@@ -588,32 +588,129 @@ function buildConstruct() {
 }
 buildConstruct();
 
-// ---------------------------------------------------------------- audio (all synthesised)
+// ---------------------------------------------------------------- audio (all synthesised, no recordings)
 let AC = null, master = null;
-const SFX = {};
-function makeBuf(dur, fn) {
-  const n = AC.sampleRate * dur | 0, b = AC.createBuffer(1, n, AC.sampleRate), d = b.getChannelData(0), st = { lp: 0 };
-  for (let i = 0; i < n; i++) d[i] = fn(i / AC.sampleRate, st);
-  return b;
-}
+const SFX = {}, SFX_GAIN = { shot: 1, clink: 0.45, clank: 0.8, thud: 0.9, whoosh: 0.4, freeze: 0.9, tick: 0.25, gulp: 0.5 };
 function initAudio() {
   if (AC) { AC.resume(); return; }
   AC = new AudioContext();
-  master = AC.createGain(); master.gain.value = 0.7; master.connect(AC.destination);
-  SFX.shot = makeBuf(0.6, (t, s) => { s.lp += (Math.random() * 2 - 1 - s.lp) * 0.3; return s.lp * Math.exp(-t * 14) * 1.2 + Math.sin(2 * Math.PI * 70 * t * (1 - t)) * Math.exp(-t * 9) * 0.9; });
-  SFX.whoosh = makeBuf(1.4, (t, s) => { s.lp += (Math.random() * 2 - 1 - s.lp) * (0.02 + 0.2 * t / 1.4); return s.lp * Math.sin(Math.PI * t / 1.4) ** 2 * 3; });
-  SFX.gulp = makeBuf(0.35, t => Math.sin(2 * Math.PI * (320 - 500 * t) * t) * Math.sin(Math.PI * t / 0.35) * 0.5);
-  SFX.thud = makeBuf(0.3, (t, s) => { s.lp += (Math.random() * 2 - 1 - s.lp) * 0.08; return (s.lp * 2 + Math.sin(2 * Math.PI * 90 * t)) * Math.exp(-t * 20) * 0.6; });
-  SFX.clink = makeBuf(0.35, t => (Math.sin(2 * Math.PI * 3150 * t) * 0.5 + Math.sin(2 * Math.PI * 4870 * t) * 0.35 + Math.sin(2 * Math.PI * 7330 * t) * 0.2) * Math.exp(-t * 14) * 0.5);
-  SFX.clank = makeBuf(0.4, (t, s) => { s.lp += (Math.random() * 2 - 1 - s.lp) * 0.25; return (Math.sin(2 * Math.PI * 620 * t) * 0.4 + Math.sin(2 * Math.PI * 1370 * t) * 0.3 + s.lp * 0.5) * Math.exp(-t * 16) * 0.6; });
-  SFX.tick = makeBuf(0.05, t => Math.sin(2 * Math.PI * 1800 * t) * Math.exp(-t * 90) * 0.3);
+  // a limiter at the end, so several shots at once get louder without breaking up
+  const lim = AC.createDynamicsCompressor();
+  lim.threshold.value = -6; lim.knee.value = 4; lim.ratio.value = 12; lim.attack.value = 0.002; lim.release.value = 0.15;
+  lim.connect(AC.destination);
+  master = AC.createGain(); master.gain.value = 0.8; master.connect(lim);
+  buildSounds().catch(e => console.warn('sounds', e));
   const hum = AC.createGain(); hum.gain.value = 0.025; hum.connect(master);
   for (const f of [50, 50.4, 100.2]) { const o = AC.createOscillator(); o.frequency.value = f; o.connect(hum); o.start(); }
+}
+// Each sound is rendered once, offline, from layers the way a recording is made of them: a sharp transient, the
+// body of the sound, its resonances, and the room it happens in (a convolution reverb).
+const rnd = () => Math.random() * 2 - 1;
+function impulse(ctx, secs, decay, bright = 1) {
+  const n = ctx.sampleRate * secs | 0, b = ctx.createBuffer(2, n, ctx.sampleRate);
+  for (let c = 0; c < 2; c++) {
+    const d = b.getChannelData(c);
+    let lp = 0;
+    for (let i = 0; i < n; i++) {
+      const t = i / ctx.sampleRate, k = 0.05 + 0.9 * bright * Math.exp(-t * 6);
+      lp += (rnd() - lp) * k;
+      d[i] = lp * Math.exp(-t * decay) * (t < 0.004 ? t / 0.004 : 1);
+    }
+  }
+  return b;
+}
+async function render(secs, build, { room = 0, roomSecs = 1.2, roomDecay = 5, bright = 1 } = {}) {
+  const ctx = new OfflineAudioContext(2, AC.sampleRate * secs | 0, AC.sampleRate);
+  const out = ctx.createGain();
+  out.connect(ctx.destination);
+  if (room > 0) {
+    const cv = ctx.createConvolver(), wet = ctx.createGain();
+    cv.buffer = impulse(ctx, roomSecs, roomDecay, bright);
+    wet.gain.value = room;
+    out.connect(cv).connect(wet).connect(ctx.destination);
+  }
+  const noise = dur => {
+    const n = ctx.sampleRate * dur | 0, b = ctx.createBuffer(1, n, ctx.sampleRate), d = b.getChannelData(0);
+    for (let i = 0; i < n; i++) d[i] = rnd();
+    const s = ctx.createBufferSource(); s.buffer = b; return s;
+  };
+  const filt = (type, f, q = 0.7) => { const x = ctx.createBiquadFilter(); x.type = type; x.frequency.value = f; x.Q.value = q; return x; };
+  const env = (node, at, peak, decay) => {
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0, at); g.gain.linearRampToValueAtTime(peak, at + 0.0008); g.gain.setTargetAtTime(0, at + 0.0008, decay);
+    node.connect(g); return g;
+  };
+  // a struck resonance: a decaying sine
+  const mode = (f, at, amp, decay) => { const o = ctx.createOscillator(); o.frequency.value = f; env(o, at, amp, decay).connect(out); o.start(at); o.stop(at + decay * 8); };
+  build({ ctx, out, noise, filt, env, mode });
+  const buf = await ctx.startRendering();
+  // every sound peaks at the same level; how loud each plays is set in SFX_GAIN
+  let pk = 1e-6;
+  for (let c = 0; c < buf.numberOfChannels; c++) for (const v of buf.getChannelData(c)) pk = Math.max(pk, Math.abs(v));
+  for (let c = 0; c < buf.numberOfChannels; c++) { const d = buf.getChannelData(c); for (let i = 0; i < d.length; i++) d[i] *= 0.9 / pk; }
+  return buf;
+}
+async function buildSounds() {
+  // a pistol: the supersonic crack, the muzzle blast, the low punch, the slide cycling, and the room answering
+  SFX.shot = await render(1.4, ({ ctx, out, noise, filt, env }) => {
+    const crack = noise(0.03); env(crack.connect(filt('highpass', 2500)), 0, 1.6, 0.004).connect(out); crack.start(0);
+    const blast = noise(0.4); env(blast.connect(filt('lowpass', 3200)), 0, 1.4, 0.045).connect(out); blast.start(0);
+    const mid = noise(0.2); env(mid.connect(filt('bandpass', 900, 0.9)), 0.001, 1.1, 0.03).connect(out); mid.start(0.001);
+    const punch = ctx.createOscillator(); punch.frequency.setValueAtTime(160, 0); punch.frequency.exponentialRampToValueAtTime(42, 0.12);
+    env(punch, 0, 1.2, 0.05).connect(out); punch.start(0); punch.stop(0.5);
+    const mech = noise(0.02); env(mech.connect(filt('bandpass', 4200, 3)), 0.035, 0.35, 0.006).connect(out); mech.start(0.035);
+  }, { room: 0.55, roomSecs: 1.3, roomDecay: 4.5, bright: 0.7 });
+  // a brass case hitting a hard floor: a bright ring, then two little bounces
+  SFX.clink = await render(0.7, ({ mode, noise, filt, env, out }) => {
+    for (const [at, a] of [[0, 1], [0.11, 0.45], [0.19, 0.2]]) {
+      const tap = noise(0.01); env(tap.connect(filt('highpass', 5000)), at, 0.4 * a, 0.002).connect(out); tap.start(at);
+      for (const [f, amp, d] of [[4230, 0.5, 0.09], [6870, 0.32, 0.06], [9150, 0.22, 0.045], [11900, 0.14, 0.03], [2950, 0.12, 0.05]]) mode(f * (1 + rnd() * 0.01), at, amp * a, d * (0.6 + a * 0.4));
+    }
+  }, { room: 0.18, roomSecs: 0.6, roomDecay: 8 });
+  // a gun landing: a dull hit of polymer and steel with a short metallic ring
+  SFX.clank = await render(0.8, ({ mode, noise, filt, env, out }) => {
+    const hit = noise(0.08); env(hit.connect(filt('lowpass', 2200)), 0, 1.0, 0.015).connect(out); hit.start(0);
+    const knock = noise(0.05); env(knock.connect(filt('bandpass', 380, 2)), 0, 1.2, 0.02).connect(out); knock.start(0);
+    for (const [f, a, d] of [[612, 0.25, 0.06], [1480, 0.22, 0.05], [2710, 0.16, 0.04], [3980, 0.1, 0.03]]) mode(f, 0.001, a, d);
+  }, { room: 0.25, roomSecs: 0.8, roomDecay: 6 });
+  // something heavy and soft hitting the ground (a body, a bag, a chair)
+  SFX.thud = await render(0.7, ({ ctx, noise, filt, env, out }) => {
+    const o = ctx.createOscillator(); o.frequency.setValueAtTime(110, 0); o.frequency.exponentialRampToValueAtTime(48, 0.09);
+    env(o, 0, 1.0, 0.04).connect(out); o.start(0); o.stop(0.4);
+    const n = noise(0.1); env(n.connect(filt('lowpass', 900)), 0, 0.9, 0.018).connect(out); n.start(0);
+    const slap = noise(0.02); env(slap.connect(filt('bandpass', 1800, 1)), 0, 0.3, 0.004).connect(out); slap.start(0);
+  }, { room: 0.2, roomSecs: 0.7, roomDecay: 7 });
+  // a short rush of air for things appearing, sliding away and loading: quick in, quick out, no long swell
+  SFX.whoosh = await render(0.9, ({ ctx, noise, filt, out }) => {
+    const n = noise(0.9), bp = filt('bandpass', 500, 1.4), g = ctx.createGain();
+    bp.frequency.setValueAtTime(350, 0); bp.frequency.exponentialRampToValueAtTime(2600, 0.28); bp.frequency.exponentialRampToValueAtTime(900, 0.6);
+    g.gain.setValueAtTime(0, 0); g.gain.linearRampToValueAtTime(0.9, 0.22); g.gain.setTargetAtTime(0, 0.26, 0.08);
+    n.connect(bp).connect(g).connect(out); n.start(0);
+  }, { room: 0.15, roomSecs: 0.6, roomDecay: 6 });
+  // time stopping: a deep tape-stop drop and a hollow ring
+  SFX.freeze = await render(2.2, ({ ctx, noise, filt, env, mode, out }) => {
+    const o = ctx.createOscillator(); o.type = 'triangle'; o.frequency.setValueAtTime(220, 0); o.frequency.exponentialRampToValueAtTime(28, 0.7);
+    const g = ctx.createGain(); g.gain.setValueAtTime(0.6, 0); g.gain.setTargetAtTime(0, 0.5, 0.15);
+    o.connect(filt('lowpass', 900)).connect(g).connect(out); o.start(0); o.stop(1.5);
+    const n = noise(0.6), bp = filt('bandpass', 3000, 2); bp.frequency.exponentialRampToValueAtTime(200, 0.6);
+    env(n.connect(bp), 0, 0.5, 0.15).connect(out); n.start(0);
+    mode(523, 0.02, 0.08, 0.5); mode(784, 0.02, 0.05, 0.4);
+  }, { room: 0.5, roomSecs: 2, roomDecay: 2.5, bright: 0.5 });
+  SFX.tick = await render(0.06, ({ noise, filt, env, mode, out }) => {
+    const n = noise(0.01); env(n.connect(filt('bandpass', 3500, 2)), 0, 0.5, 0.0025).connect(out); n.start(0);
+    mode(1900, 0, 0.12, 0.006);
+  });
+  // swallowing the pill
+  SFX.gulp = await render(0.45, ({ ctx, noise, filt, env, out }) => {
+    const o = ctx.createOscillator(); o.frequency.setValueAtTime(240, 0.05); o.frequency.exponentialRampToValueAtTime(120, 0.2);
+    env(o.connect(filt('lowpass', 600)), 0.05, 0.35, 0.05).connect(out); o.start(0.05); o.stop(0.4);
+    const n = noise(0.1); env(n.connect(filt('bandpass', 700, 3)), 0.04, 0.25, 0.03).connect(out); n.start(0.04);
+  }, { room: 0.05, roomSecs: 0.3, roomDecay: 10 });
 }
 function play(name, rate = 1, vol = 1) {
   if (!AC || !SFX[name]) return;
   const s = AC.createBufferSource(), g = AC.createGain();
-  s.buffer = SFX[name]; s.playbackRate.value = rate; g.gain.value = vol;
+  s.buffer = SFX[name]; s.playbackRate.value = rate; g.gain.value = vol * (SFX_GAIN[name] ?? 1);
   s.connect(g).connect(master); s.start();
 }
 
@@ -2096,7 +2193,7 @@ function buildStreet(P) {
       if (to.dot(camera.getWorldDirection(new V3())) > 0.8 || realT > P.freezeAt) {
         worldFrozen = true;
         P.freezeAt = 0;
-        play('whoosh', 0.35, 1);
+        play('freeze', 1, 1);
         toast('Freeze it.');
       }
     }
@@ -3233,7 +3330,7 @@ document.fonts?.ready.then(() => { drawWrist(); });
 drawWrist();
 refreshStatus();
 loadGunLibrary().catch(e => console.warn('gun models', e)).finally(() => loadPeople().catch(e => console.warn('people', e)));
-window.construct = { GRIP_IN_FIST, get worldFrozen() { return worldFrozen; }, aimAgent, loadCars, loadCrowdLib, vatTime, HUMAN_LIB, humans, makeHuman, loadPeople, keys, moveVel, jump, spawnGun, loadProgram, get program() { return program; }, player, reportError, get armoury() { return armoury; }, ctrlModels, skinMat, poseControllerHand, hands, posed, casings, scene, pick, raycaster, camera, bullets, renderer, takeSlot, liveInst, GUNS, loadGuns, loadAgents, setCode, toggleBT, resetConstruct, grab, release, fire, props, P, rig };
+window.construct = { SFX, initAudio, GRIP_IN_FIST, get worldFrozen() { return worldFrozen; }, aimAgent, loadCars, loadCrowdLib, vatTime, HUMAN_LIB, humans, makeHuman, loadPeople, keys, moveVel, jump, spawnGun, loadProgram, get program() { return program; }, player, reportError, get armoury() { return armoury; }, ctrlModels, skinMat, poseControllerHand, hands, posed, casings, scene, pick, raycaster, camera, bullets, renderer, takeSlot, liveInst, GUNS, loadGuns, loadAgents, setCode, toggleBT, resetConstruct, grab, release, fire, props, P, rig };
 </script>
 </body>
 </html>
