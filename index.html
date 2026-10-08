@@ -1341,6 +1341,34 @@ class CrowdBatches {
   }
 }
 
+// ---------------------------------------------------------------- cars (Poly Pizza, CC-BY): see assets/CREDITS.md
+// normalised in Blender: real length, front towards -Z, sitting on the ground. The models are a little cartoon-wide,
+// so each one is squeezed to a real width and height here.
+const CAR_DIMS = { taxi: [1.85, 1.9], charger: [1.95, 1.37], rx7: [1.69, 1.27], gtr: [1.79, 1.36], l200: [1.8, 1.78], rangerover: [1.78, 1.8], sedan: [1.82, 1.4], van: [2.0, 2.3], hilux: [1.79, 1.7] };
+let carLib = null;
+function loadCars() {
+  if (carLib) return carLib;
+  carLib = fetch('assets/cars/cars.json').then(r => r.json()).then(man => Promise.all(Object.entries(man).map(async ([key, c]) => {
+    const g = await gltfLoader.loadAsync(`assets/cars/${key}.glb`);
+    const [w, h] = CAR_DIMS[key] || [c.size[0], c.size[1]];
+    g.scene.scale.set(w / c.size[0], h / c.size[1], 1);
+    // car paint gets a clear coat, glass goes dark and glossy, rubber and trim stay matte
+    g.scene.traverse(o => {
+      if (!o.isMesh) return;
+      const m = o.material, col = m.color || new THREE.Color(1, 1, 1), n = (m.name || '').toLowerCase();
+      const lum = 0.3 * col.r + 0.59 * col.g + 0.11 * col.b, sat = Math.max(col.r, col.g, col.b) - Math.min(col.r, col.g, col.b);
+      let nm;
+      if (/glass|window|wind/.test(n) || (m.transparent && m.opacity < 1)) nm = new THREE.MeshPhysicalMaterial({ color: 0x1a2228, metalness: 0.2, roughness: 0.05, clearcoat: 1 });
+      else if (lum < 0.08) nm = new THREE.MeshStandardMaterial({ color: col, map: m.map, roughness: 0.85 });
+      else if (sat > 0.15 || /paint|body|car/.test(n)) nm = new THREE.MeshPhysicalMaterial({ color: col, map: m.map, metalness: 0.35, roughness: 0.38, clearcoat: 1, clearcoatRoughness: 0.12 });
+      else nm = new THREE.MeshStandardMaterial({ color: col, map: m.map, metalness: lum > 0.6 ? 0.8 : 0.3, roughness: 0.35 });
+      o.material = nm;
+    });
+    return { key, scene: g.scene, length: c.size[2], width: w, height: h };
+  }))).catch(e => { carLib = null; throw e; });
+  return carLib;
+}
+
 // spawn an Agent (or a guard) as a physics prop; falls back to the simple figure if the people haven't loaded
 function spawnAgentProp(pos, yaw, { avatar = 'Business_Male_03', clip = 'm_idle_neutral_01', shades = true, name = 'Agent', matT = 0 } = {}) {
   const o = HUMAN_LIB.avatars[avatar] ? makeRealAgent(avatar, clip, shades) : makeAgent();
@@ -1787,7 +1815,7 @@ function buildStreet(P) {
   }
   put(P, mergeGeometries(lampParts), new THREE.MeshStandardMaterial({ color: 0x23302a, metalness: 0.5, roughness: 0.5 }));
   // a dense crowd: two streams per pavement (one each way), everyone avoiding each other and you
-  const CROWD = 320, STRIDE = 1.3;
+  const CROWD = 320, NEAR_SIDE = 270, STRIDE = 1.3;
   const people = [];
   let batches = null, red = null, shadows = null;
   P.people = people;
@@ -1801,7 +1829,8 @@ function buildStreet(P) {
     shadows.frustumCulled = false;
     P.group.add(shadows);
     for (let i = 0; i < CROWD; i++) {
-      const side = i % 2 ? 1 : -1, dir = Math.random() < 0.5 ? 1 : -1;
+      // most of the crowd is on your pavement; the far side just needs to look busy
+      const side = i < NEAR_SIDE ? -1 : 1, dir = Math.random() < 0.5 ? 1 : -1;
       const x = laneX(side, dir);
       people.push({ type: i % types.length, side, dir, home: x, x, z: rand(Z1, Z0), want: rand(1.1, 1.55), speed: 1.3, phase: Math.random() });
     }
@@ -1834,7 +1863,51 @@ function buildStreet(P) {
   const cell = (side, z) => side * 1000 + Math.floor(z);
   let awayT = 0, turned = false;
   const head = new V3(), fwd = new V3(), m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), ONEV = new V3(1, 1, 1), pv = new V3();
+  const traffic = [];
+  loadCars().then(cars => {
+    if (program !== P) return;
+    for (const [x, dir] of [[-2.45, 1], [2.45, -1]]) {
+      let z = Z1 + rand(0, 8);
+      while (z < Z0) {
+        const c = cars[(traffic.length * 5 + 2) % cars.length], obj = c.scene.clone();
+        obj.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; o.userData.mat = o.material; o.userData.onHit = carHit; P.hit.push(o); } });
+        P.group.add(obj);
+        const body = new CANNON.Body({ type: CANNON.Body.KINEMATIC, shape: new CANNON.Box(new CANNON.Vec3(c.width / 2, c.height / 2, c.length / 2)) });
+        physics.addBody(body);
+        P.bodies.push(body);
+        traffic.push({ obj, body, c, x, dir, z, want: rand(8, 12.5), speed: 9 });
+        z += c.length + rand(9, 22);
+      }
+    }
+    if (codeMode) setLook(P.group, true, 0.04);
+  }).catch(e => console.warn('cars', e));
+  function carHit(hit, dir) {
+    spawnFlash(hit.point, 0.06, 0.05);
+    play('clank', rand(1.2, 1.5) * (0.4 + 0.6 * timeScale), 0.5);
+  }
+  let meZ = 0;
+  const updateTraffic = sdt => {
+    meZ = toLocalP(P, headPos(_v2).x, _v2.z).z;
+    for (const t of traffic) {
+      // keep a safe gap behind the car ahead in the lane
+      let gap = Infinity, ahead = null;
+      for (const o of traffic) if (o !== t && o.x === t.x) { const d = (o.z - t.z) * t.dir; if (d > 0 && d < gap) { gap = d; ahead = o; } }
+      const room = gap - (t.c.length + (ahead ? ahead.c.length : 0)) / 2;
+      const target = ahead && room < 14 ? Math.min(t.want, ahead.speed * clamp((room - 3) / 8, 0, 1.1)) : t.want;
+      t.speed += (target - t.speed) * Math.min(1, sdt * (target < t.speed ? 3 : 0.8));
+      t.z += t.dir * t.speed * sdt;
+      if (t.z > Z0 + 12) t.z = Z1 - 10; else if (t.z < Z1 - 12) t.z = Z0 + 10;
+      t.obj.position.set(t.x, 0, t.z);
+      t.obj.rotation.y = t.dir > 0 ? Math.PI : 0;
+      t.obj.visible = Math.abs(t.z - meZ) < 70;
+      const w = toWorldP(P, _v.set(t.x, t.c.height / 2, t.z)), v = new V3(0, 0, t.dir * t.speed).applyAxisAngle(UP, P.yaw);
+      t.body.position.set(w.x, w.y, w.z);
+      t.body.velocity.set(v.x, 0, v.z);
+      t.body.quaternion.setFromAxisAngle(new CANNON.Vec3(0, 1, 0), P.yaw + t.obj.rotation.y);
+    }
+  };
   P.update = (dt, sdt) => {
+    updateTraffic(sdt);
     if (!batches) return;
     headPos(head);
     camera.getWorldDirection(fwd);
@@ -1884,7 +1957,7 @@ function buildStreet(P) {
       else if (d < 75 && !p.parked) {
         q.setFromAxisAngle(UP, p.dir > 0 ? 0 : Math.PI);
         m4.compose(pv.set(p.x, 0.15, p.z), q, ONEV);
-        batches.add(p.type, d < 16 ? 0 : 1, m4, p.phase, 0);
+        batches.add(p.type, d < 11 ? 0 : 1, m4, p.phase, 0);
       }
       if (d < 75 && !p.parked) shadows.setMatrixAt(s++, m4.makeTranslation(p.x, 0.158, p.z));
       if (d < 6) near.push([d, p]);
@@ -1915,7 +1988,8 @@ function buildStreet(P) {
   };
   P.ground = (x, z) => (Math.abs(toLocalP(P, x, z).x) >= 5 ? 0.15 : 0);
   P.spawn = new V3(-7, 0.15, 2);
-  P.bounds = [-8.6, 8.6, Z1 + 2, Z0 - 2];
+  // you stay on your side of the street
+  P.bounds = [-8.6, -5.35, Z1 + 2, Z0 - 2];
   P.env = { bg: 0xdfe2e4, fog: [18, 90], hemi: 1.0, sun: 2.1, envI: 0.6, floor: true };
   P.toast = 'Another training program.';
 }
@@ -2925,7 +2999,7 @@ document.fonts?.ready.then(() => { drawWrist(); });
 drawWrist();
 refreshStatus();
 loadGunLibrary().catch(e => console.warn('gun models', e)).finally(() => loadPeople().catch(e => console.warn('people', e)));
-window.construct = { loadCrowdLib, vatTime, HUMAN_LIB, humans, makeHuman, loadPeople, keys, moveVel, jump, spawnGun, loadProgram, get program() { return program; }, player, reportError, get armoury() { return armoury; }, ctrlModels, skinMat, poseControllerHand, hands, posed, casings, scene, pick, raycaster, camera, bullets, renderer, takeSlot, liveInst, GUNS, loadGuns, loadAgents, setCode, toggleBT, resetConstruct, grab, release, fire, props, P, rig };
+window.construct = { loadCars, loadCrowdLib, vatTime, HUMAN_LIB, humans, makeHuman, loadPeople, keys, moveVel, jump, spawnGun, loadProgram, get program() { return program; }, player, reportError, get armoury() { return armoury; }, ctrlModels, skinMat, poseControllerHand, hands, posed, casings, scene, pick, raycaster, camera, bullets, renderer, takeSlot, liveInst, GUNS, loadGuns, loadAgents, setCode, toggleBT, resetConstruct, grab, release, fire, props, P, rig };
 </script>
 </body>
 </html>

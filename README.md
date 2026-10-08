@@ -9,7 +9,7 @@ It's an endless white room with two red leather wingback chairs and the old Deep
   - **Lobby:** a marble lobby with pillars, metal detectors and guards, plus a bench of guns to take. Bullets chip the stone and leave holes and dust.
   - **Jump program:** night rooftops 32 m above a lit city with an 11 m gap. Run and jump. Nobody makes the first jump.
   - **Dojo:** shoji screens, a wooden training dummy and a hanging heavy bag that swings when you punch it.
-  - **Red dress street:** a crowded street with 320 people walking both ways, who step round you and each other. Look away from the woman in the red dress...
+  - **Red dress street:** a crowded street with 320 people walking both ways, who step round you and each other, and traffic on the road. Look away from the woman in the red dress...
 - **Load agents:** three agents in suits and sunglasses appear, and they fall over when you shoot them
 - **Bullet time:** slow-motion bullets with trails, expanding rings and flying brass
 - **Code vision:** everything turns into green falling code

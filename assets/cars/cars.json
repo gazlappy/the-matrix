@@ -1,0 +1,92 @@
+{
+ "taxi": {
+  "name": "Taxi",
+  "creator": "jeremy",
+  "source": "https://poly.pizza/m/coQbjlCqWY9",
+  "size": [
+   2.585,
+   2.592,
+   4.8
+  ]
+ },
+ "charger": {
+  "name": "Dodge Charger",
+  "creator": "David Sirera",
+  "source": "https://poly.pizza/m/4b80hRVxqvv",
+  "size": [
+   2.083,
+   1.44,
+   5.28
+  ]
+ },
+ "rx7": {
+  "name": "Mazda RX-7",
+  "creator": "IvOfficial",
+  "source": "https://poly.pizza/m/SnIoWlh7S2",
+  "size": [
+   1.787,
+   1.268,
+   4.3
+  ]
+ },
+ "gtr": {
+  "name": "Nissan GTR",
+  "creator": "David Sirera",
+  "source": "https://poly.pizza/m/a_HKCtYAv2W",
+  "size": [
+   1.83,
+   1.365,
+   4.6
+  ]
+ },
+ "l200": {
+  "name": "Mitsubishi L200",
+  "creator": "Muhammad Reyhan",
+  "source": "https://poly.pizza/m/4qjS9tFhsJg",
+  "size": [
+   2.016,
+   1.89,
+   5.2
+  ]
+ },
+ "rangerover": {
+  "name": "Range Rover",
+  "creator": "IvOfficial",
+  "source": "https://poly.pizza/m/8zk4o6nALW",
+  "size": [
+   1.823,
+   2.088,
+   4.51
+  ]
+ },
+ "sedan": {
+  "name": "Red Car",
+  "creator": "J-Toastie",
+  "source": "https://poly.pizza/m/dVLJ5CjB0h",
+  "size": [
+   2.558,
+   1.39,
+   4.5
+  ]
+ },
+ "van": {
+  "name": "Generic Van",
+  "creator": "PuKkBuMXDD",
+  "source": "https://poly.pizza/m/BbRojf2v3H",
+  "size": [
+   2.803,
+   2.799,
+   5.0
+  ]
+ },
+ "hilux": {
+  "name": "Toyota Hilux 97",
+  "creator": "Muhammad Reyhan",
+  "source": "https://poly.pizza/m/8-0nFArehjd",
+  "size": [
+   1.936,
+   1.728,
+   4.7
+  ]
+ }
+}

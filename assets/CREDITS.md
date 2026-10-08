@@ -22,6 +22,24 @@ These models were downloaded from [Poly Pizza](https://poly.pizza). For use here
 
 License: https://creativecommons.org/licenses/by/3.0/
 
+## Car models: CC-BY 3.0 (attribution required)
+
+These were downloaded from [Poly Pizza](https://poly.pizza). In Blender each was scaled to its real length, turned to face forward and sat on the ground, and the heaviest were decimated. Width and height are corrected to real proportions in the app, and paint, glass and trim get new materials.
+
+| File | Model | Creator | Source |
+|---|---|---|---|
+| cars/taxi.glb | Taxi | jeremy | https://poly.pizza/m/coQbjlCqWY9 |
+| cars/charger.glb | Dodge Charger | David Sirera | https://poly.pizza/m/4b80hRVxqvv |
+| cars/rx7.glb | Mazda RX-7 | IvOfficial | https://poly.pizza/m/SnIoWlh7S2 |
+| cars/gtr.glb | Nissan GTR | David Sirera | https://poly.pizza/m/a_HKCtYAv2W |
+| cars/l200.glb | Mitsubishi L200 | Muhammad Reyhan | https://poly.pizza/m/4qjS9tFhsJg |
+| cars/rangerover.glb | Range Rover | IvOfficial | https://poly.pizza/m/8zk4o6nALW |
+| cars/sedan.glb | Red Car | J-Toastie | https://poly.pizza/m/dVLJ5CjB0h |
+| cars/van.glb | Generic Van | PuKkBuMXDD | https://poly.pizza/m/BbRojf2v3H |
+| cars/hilux.glb | Toyota Hilux 97 | Muhammad Reyhan | https://poly.pizza/m/8-0nFArehjd |
+
+License: https://creativecommons.org/licenses/by/3.0/
+
 ## Textures: CC0 (public domain)
 
 These come from [Poly Haven](https://polyhaven.com) at 1k resolution.
