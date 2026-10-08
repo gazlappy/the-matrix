@@ -48,7 +48,9 @@ For use here, each one was:
 
 - converted from FBX to GLB in Blender, with the crowd meshes decimated to half the triangles
 - given textures scaled down to 1024 / 512 px JPG and PNG
-- in the case of Female_Party_01, recoloured red for the woman in the red dress
+- in the case of Female_Adult_11, recoloured (red dress, blonde hair) for the woman in the red dress
+
+The crowd's walks are baked at load time into vertex animation textures.
 
 ## Hands: MIT
 
