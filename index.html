@@ -641,7 +641,7 @@ function toast(msg) {
 }
 
 // ---------------------------------------------------------------- modes
-let timeScale = 1, btOn = false, menuOpen = true;
+let timeScale = 1, btOn = false, menuOpen = true, worldFrozen = false;
 let fade = null;
 function setCode(on) {
   codeMode = on;
@@ -1091,6 +1091,7 @@ function resetConstruct() {
   if (codeMode) setCode(false);
   // with the armoury or a program loaded, put it away first; the chairs come back once it has gone
   nextProgram = null;
+  worldFrozen = false;
   if (armoury) unloadGuns();
   else if (program) unloadProgram();
   else if (restoreT <= 0) restoreConstruct();
@@ -1161,13 +1162,55 @@ function tickHumans(sdt) {
   headPos(_hh);
   for (const h of humans) {
     if (!h.obj.parent) { humans.delete(h); continue; }
+    if (sdt === 0) continue;   // frozen: hold every pose exactly as it is
     h.acc += sdt;
     if (!h.obj.visible) continue;
     const d = h.obj.getWorldPosition(_hp).distanceTo(_hh);
     const every = d < 12 ? 1 : d < 30 ? 2 : 4;
     if ((humanFrame + h.k) % every === 0) { h.mixer.update(h.acc); h.acc = 0; }
+    if (h.aim && !h.action.paused && sdt > 0) h.aim(headPos(_hp));
   }
 }
+// point a limb at something: rotate the bone so the line to its child bone heads for the target
+const _aimM = new THREE.Matrix4();
+const _ic = new V3();
+const _ia = new V3(), _ib = new V3(), _iq = new THREE.Quaternion(), _iw = new THREE.Quaternion(), _ip = new THREE.Quaternion();
+function pointBone(bone, child, target) {
+  bone.updateWorldMatrix(true, true);
+  const at = bone.getWorldPosition(_ia);
+  const dir = child.getWorldPosition(_ib).sub(at).normalize();
+  _iq.setFromUnitVectors(dir, _ic.copy(target).sub(at).normalize());
+  bone.getWorldQuaternion(_iw);
+  bone.parent.getWorldQuaternion(_ip);
+  bone.quaternion.copy(_ip.invert().multiply(_iq.multiply(_iw)));
+}
+// an Agent levelling a pistol at you: right arm straight out at your head, the gun along it
+function aimAgent(prop, gunKey = 'deagle') {
+  const h = prop.obj.userData.human;
+  if (!h || !GUNS[gunKey]) return;
+  const o = h.obj;
+  const up = o.getObjectByName('Bip01_R_UpperArm'), fore = o.getObjectByName('Bip01_R_Forearm'), hand = o.getObjectByName('Bip01_R_Hand');
+  if (!up || !fore || !hand) return;
+  const gun = makeGun(gunKey);
+  gun.traverse(m => { if (m.isMesh) { m.castShadow = true; m.userData.mat = m.material; } });
+  hand.add(gun);
+  // the skeleton is in centimetres: undo the hand's world scale so the gun is real size
+  o.updateMatrixWorld(true);
+  const hs = hand.getWorldScale(new V3());
+  gun.scale.set(1 / hs.x, 1 / hs.y, 1 / hs.z);
+  h.aim = target => {
+    pointBone(up, fore, target);
+    pointBone(fore, hand, target);
+    // the gun sits in the hand, barrel on the target (a gun's barrel is its -Z)
+    hand.updateWorldMatrix(true, false);
+    const at = hand.getWorldPosition(_ia);
+    // Matrix4.lookAt(eye, target) turns +Z away from the target, which puts the barrel (-Z) on it
+    const wq = new THREE.Quaternion().setFromRotationMatrix(_aimM.lookAt(at, target, UP));
+    gun.quaternion.copy(hand.getWorldQuaternion(_iw).invert().multiply(wq));
+    gun.position.set(0, 0, 0);
+  };
+}
+
 // an Agent: the black-suited businessman with sunglasses, standing idle; a physics prop that topples when shot
 function makeRealAgent(avatar = 'Business_Male_03', clip = 'm_idle_neutral_01', shades = true) {
   const h = makeHuman(avatar, clip, { speed: rand(0.9, 1.1) });
@@ -1911,6 +1954,16 @@ function buildStreet(P) {
     }
   };
   P.update = (dt, sdt) => {
+    // the moment you look at him (or a few seconds later): "Freeze it."
+    if (P.freezeAt && !worldFrozen && red?.agent && props.includes(red.agent)) {
+      const a = red.agent.obj.getWorldPosition(_v2), to = a.sub(headPos(_v)).normalize();
+      if (to.dot(camera.getWorldDirection(new V3())) > 0.8 || realT > P.freezeAt) {
+        worldFrozen = true;
+        P.freezeAt = 0;
+        play('whoosh', 0.35, 1);
+        toast('Freeze it.');
+      }
+    }
     updateTraffic(sdt);
     if (!batches) return;
     headPos(head);
@@ -1989,7 +2042,15 @@ function buildStreet(P) {
         turned = true;
         red.hero.obj.removeFromParent();
         red.hero = null; red.parked = true; red.want = 0;
-        red.agent = spawnAgentProp(new V3(w.x, 0.15 + 1.0, w.z), Math.atan2(head.x - w.x, head.z - w.z));
+        // he steps out about two metres from you, on the pavement, where she was
+        const l = toLocalP(P, w.x, w.z), dl = new V3(l.x - me.x, 0, l.z - me.z);
+        if (dl.lengthSq() < 0.01) dl.set(0, 0, -1);
+        dl.setLength(2.1).add(me);
+        dl.x = clamp(dl.x, -OUT + 0.35, -IN - 0.35);
+        const aw = toWorldP(P, dl);
+        red.agent = spawnAgentProp(new V3(aw.x, 0.15 + 1.0, aw.z), Math.atan2(head.x - aw.x, head.z - aw.z));
+        aimAgent(red.agent);
+        P.freezeAt = realT + 3.5;
         play('whoosh', 0.5, 0.9);
         toast('Look again.');
       }
@@ -2062,6 +2123,7 @@ function unloadProgram() {
 }
 function disposeProgram() {
   const P = program;
+  worldFrozen = false;
   P.group.removeFromParent();
   for (const b of P.bodies) physics.removeBody(b);
   P.dispose?.();
@@ -2946,7 +3008,8 @@ function update(time) {
   fpsEma += (1 / dt - fpsEma) * 0.05;
 
   timeScale += ((btOn ? 0.06 : 1) - timeScale) * Math.min(1, dt * 4);
-  const sdt = dt * timeScale;
+  // a frozen program stops everything but you: physics, bullets, people, cars
+  const sdt = worldFrozen ? 0 : dt * timeScale;
   codeTime.value = (codeTime.value + dt * (0.25 + 0.75 * timeScale)) % 900;
   bgColor.copy(codeMode ? BLACK : baseBg).lerp(codeMode ? BT_BLACK : BT_WHITE, (1 - timeScale) * (program ? 0.2 : 0.9));
 
@@ -3012,7 +3075,7 @@ document.fonts?.ready.then(() => { drawWrist(); });
 drawWrist();
 refreshStatus();
 loadGunLibrary().catch(e => console.warn('gun models', e)).finally(() => loadPeople().catch(e => console.warn('people', e)));
-window.construct = { loadCars, loadCrowdLib, vatTime, HUMAN_LIB, humans, makeHuman, loadPeople, keys, moveVel, jump, spawnGun, loadProgram, get program() { return program; }, player, reportError, get armoury() { return armoury; }, ctrlModels, skinMat, poseControllerHand, hands, posed, casings, scene, pick, raycaster, camera, bullets, renderer, takeSlot, liveInst, GUNS, loadGuns, loadAgents, setCode, toggleBT, resetConstruct, grab, release, fire, props, P, rig };
+window.construct = { get worldFrozen() { return worldFrozen; }, aimAgent, loadCars, loadCrowdLib, vatTime, HUMAN_LIB, humans, makeHuman, loadPeople, keys, moveVel, jump, spawnGun, loadProgram, get program() { return program; }, player, reportError, get armoury() { return armoury; }, ctrlModels, skinMat, poseControllerHand, hands, posed, casings, scene, pick, raycaster, camera, bullets, renderer, takeSlot, liveInst, GUNS, loadGuns, loadAgents, setCode, toggleBT, resetConstruct, grab, release, fire, props, P, rig };
 </script>
 </body>
 </html>
