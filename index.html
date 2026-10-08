@@ -1104,7 +1104,7 @@ const PEOPLE = {
   crowd: [['Business_Male_01', 'm'], ['Business_Male_02', 'm'], ['Business_Male_04', 'm'], ['Business_Male_05', 'm'], ['Business_Male_06', 'm'],
     ['Business_Female_01', 'f'], ['Business_Female_02', 'f'], ['Business_Female_03', 'f'], ['Business_Female_04', 'f'],
     ['Female_Adult_04', 'f'], ['Female_Adult_13', 'f'], ['Male_Adult_02', 'm'], ['Male_Adult_03', 'm'], ['Male_Adult_12', 'm']],
-  special: ['Business_Male_03', 'Female_Adult_11', 'Security_Male_01', 'Security_Female_01'],
+  special: ['Business_Male_03', 'Female_Party_01', 'Security_Male_01', 'Security_Female_01'],
   clips: ['m_walk_neutral_01', 'm_walk_neutral_02', 'm_walk_stroll_01', 'f_walk_neutral_01', 'f_walk_neutral_02', 'f_walk_self-assured', 'm_idle_neutral_01', 'f_idle_neutral_01'],
 };
 const HUMAN_LIB = { avatars: {}, clips: {} };
@@ -1118,7 +1118,7 @@ function trimClip(clip) {
 let peopleLib = null;
 function avatarMaterials(name, root) {
   const tex = (file, srgb) => { const t = texLoader.load(`assets/people/${name}/${file}`); t.flipY = false; if (srgb) t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4; return t; };
-  const hero = name === 'Business_Male_03' || name === 'Female_Adult_11';
+  const hero = name === 'Business_Male_03' || name === 'Female_Party_01';
   root.traverse(o => {
     if (!o.isMesh) return;
     const n = (o.material?.name || '').toLowerCase();
@@ -1127,7 +1127,7 @@ function avatarMaterials(name, root) {
       o.material = new THREE.MeshStandardMaterial({ map: tex('hair.png', true), alphaTest: 0.45, side: THREE.DoubleSide, roughness: 0.7 });
     }
     else if (n.includes('head')) o.material = new THREE.MeshStandardMaterial({ map: tex('head.jpg', true), normalMap: hero ? tex('head_n.jpg') : null, roughness: 0.62 });
-    else o.material = new THREE.MeshStandardMaterial({ map: tex('body.jpg', true), normalMap: hero ? tex('body_n.jpg') : null, roughness: 0.75 });
+    else o.material = new THREE.MeshStandardMaterial({ map: tex('body.jpg', true), normalMap: hero && name !== 'Female_Party_01' ? tex('body_n.jpg') : null, roughness: name === 'Female_Party_01' ? 0.55 : 0.75 });
     o.frustumCulled = false;
   });
 }
@@ -1247,6 +1247,32 @@ function aimAgent(prop, gunKey = 'deagle') {
     _aimM.lookAt(palm, target, upv).setPosition(palm);
     _m4a.copy(hand.matrixWorld).invert().multiply(_aimM).decompose(gun.position, gun.quaternion, gun.scale);
   };
+}
+// a short skirt for the woman in red: her model wears shorts, so a flared tube hangs from her hips to mid-thigh
+// (fitted to the hips in the rest pose, then fixed to the pelvis so it sways with her walk)
+function addSkirt(h, avatar, color) {
+  const T = HUMAN_LIB.avatars[avatar], pelvis = h.obj.getObjectByName('Bip01_Pelvis'), tp = T.getObjectByName('Bip01_Pelvis');
+  if (!pelvis || !tp) return;
+  T.updateMatrixWorld(true);
+  const p = new V3(), lo = new V3(1, 0, 1).multiplyScalar(9), hi = lo.clone().negate();
+  T.traverse(o => {
+    if (!o.isSkinnedMesh || /head|opacity/i.test(o.material?.name || '')) return;
+    for (let i = 0; i < o.geometry.attributes.position.count; i++) {
+      o.getVertexPosition(i, p); o.localToWorld(p);
+      if (p.y > 0.84 && p.y < 0.96 && Math.abs(p.x) < 0.2 && Math.abs(p.z) < 0.2) { lo.min(p); hi.max(p); }   // not her hands
+    }
+  });
+  const top = 1.0, hem = 0.66, cx = (lo.x + hi.x) / 2, cz = (lo.z + hi.z) / 2, rx = (hi.x - lo.x) / 2 + 0.012, rz = (hi.z - lo.z) / 2 + 0.018;
+  const geo = new THREE.CylinderGeometry(1, 1.1, top - hem, 28, 4, true);
+  geo.scale(rx, 1, rz);
+  // pull the waist in a touch so it hugs her
+  const pos = geo.attributes.position;
+  for (let i = 0; i < pos.count; i++) if (pos.getY(i) > 0.1) { pos.setX(i, pos.getX(i) * 0.87); pos.setZ(i, pos.getZ(i) * 0.87); }
+  geo.computeVertexNormals();
+  const skirt = new THREE.Mesh(geo, new THREE.MeshPhysicalMaterial({ color, roughness: 0.42, sheen: 1, sheenColor: 0xff5060, sheenRoughness: 0.4, side: THREE.DoubleSide }));
+  skirt.castShadow = true;
+  tp.matrixWorld.clone().invert().multiply(new THREE.Matrix4().makeTranslation(cx, (top + hem) / 2, cz)).decompose(skirt.position, skirt.quaternion, skirt.scale);
+  pelvis.add(skirt);
 }
 // sunglasses fitted to the face: measured once per avatar from the head mesh in its rest pose (nose tip, head width)
 const faceFits = {};
@@ -1972,8 +1998,21 @@ function buildStreet(P) {
       people.push({ type: i % types.length, side, dir, home: x, x, z: rand(Z1, Z0), want: rand(1.1, 1.55), speed: 1.3, phase: Math.random() });
     }
     // the woman in the red dress walks towards you, through the crowd
-    const h = makeHuman('Female_Adult_11', 'f_walk_self-assured', { speed: 0.85, phase: 0 });
+    const h = makeHuman('Female_Party_01', 'f_walk_self-assured', { speed: 0.85, phase: 0 });
     red = { hero: h, side: -1, dir: 1, home: -6.3, x: -6.3, z: -26, want: 1.1, speed: 1.1 };
+    addSkirt(h, 'Female_Party_01', 0xb80c1a);
+    // as she passes she turns her head and holds your eye
+    const neck = h.obj.getObjectByName('Bip01_Neck'), hd = h.obj.getObjectByName('Bip01_Head'), fw = new V3(), to = new V3(), lq = new THREE.Quaternion();
+    if (neck && hd) h.aim = target => {
+      h.obj.getWorldDirection(fw).setY(0).normalize();
+      to.copy(target).sub(hd.getWorldPosition(_v)).setY(0);
+      if (to.length() > 7) return;
+      to.normalize();
+      let ang = Math.atan2(fw.x * to.z - fw.z * to.x, fw.dot(to));
+      ang = -clamp(ang, -1.3, 1.3);
+      turnBoneWorld(neck, lq.setFromAxisAngle(UP, ang * 0.35));
+      turnBoneWorld(hd, lq.setFromAxisAngle(UP, ang * 0.45));
+    };
     P.group.add(h.obj);
     people.push(red);
   }).catch(e => console.warn('crowd', e));
@@ -2054,6 +2093,12 @@ function buildStreet(P) {
         play('whoosh', 0.35, 1);
         toast('Freeze it.');
       }
+    }
+    // while he stands, his soles stay on the pavement (nothing sinks him into it)
+    const ab = red?.agent && props.includes(red.agent) ? red.agent.body : null;
+    if (ab && _v.set(0, 1, 0).applyQuaternion(ab.quaternion).y > 0.95) {
+      const g = P.ground(ab.position.x, ab.position.z) + 1.0;
+      if (ab.position.y < g) { ab.position.y = g; if (ab.velocity.y < 0) ab.velocity.y = 0; }
     }
     updateTraffic(sdt);
     if (!batches) return;
