@@ -56,10 +56,14 @@
       <kbd>1</kbd><span>load guns</span><kbd>2</kbd><span>load agents</span>
       <kbd>C</kbd><span>code vision</span><kbd>T</kbd><span>bullet time</span>
       <kbd>R</kbd><span>reset construct</span><kbd>Esc</kbd><span>this menu</span>
+      <kbd>5</kbd><span>lobby</span><kbd>6</kbd><span>jump program</span>
+      <kbd>7</kbd><span>dojo</span><kbd>8</kbd><span>red dress street</span>
+      <kbd>Space</kbd><span>jump</span><kbd></kbd><span></span>
       <h3>QUEST 3</h3>
       <kbd>L stick</kbd><span>move</span><kbd>R stick</kbd><span>snap turn</span>
       <kbd>Grip</kbd><span>grab (point to pull)</span><kbd>Trigger</kbd><span>fire · menu</span>
-      <kbd>X</kbd><span>bullet time</span><kbd>Y</kbd><span>wrist menu</span>
+      <kbd>X</kbd><span>bullet time</span><kbd>Y</kbd><span>wrist menu (Programs page)</span>
+      <kbd>Stick click</kbd><span>jump</span><kbd></kbd><span></span>
       <kbd>A</kbd><span>code vision</span><kbd>B</kbd><span>load guns</span>
       <kbd>Throw</kbd><span>let go mid-swing</span><kbd>Catch</kbd><span>hold grip as it arrives</span>
       <h3>QUEST HAND TRACKING (put the controllers down)</h3>
@@ -80,7 +84,7 @@
 <div id="crosshair" class="hidden"></div>
 <div id="hint"></div>
 <div id="status"></div>
-<div id="keys" class="hidden"><b>E</b> grab · <b>Click</b> fire/throw · <b>1</b> guns · <b>2</b> agents · <b>C</b> code · <b>T</b> bullet time · <b>R</b> reset</div>
+<div id="keys" class="hidden"><b>E</b> grab · <b>Click</b> fire/throw · <b>Space</b> jump · <b>1</b> guns · <b>2</b> agents · <b>5-8</b> programs · <b>C</b> code · <b>T</b> bullet time · <b>R</b> reset</div>
 <div id="toast"></div>
 
 <script type="importmap">
@@ -140,7 +144,8 @@ const pmrem = new THREE.PMREMGenerator(renderer);
 scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
 scene.environmentIntensity = 0.55;
 
-scene.add(new THREE.HemisphereLight(0xffffff, 0xd8d8d4, 1.15));
+const hemi = new THREE.HemisphereLight(0xffffff, 0xd8d8d4, 1.15);
+scene.add(hemi);
 const sun = new THREE.DirectionalLight(0xffffff, 2.3);
 sun.castShadow = true;
 sun.shadow.mapSize.set(2048, 2048);
@@ -615,7 +620,7 @@ let timeScale = 1, btOn = false, menuOpen = true;
 let fade = null;
 function setCode(on) {
   codeMode = on;
-  floorShadow.visible = !on;
+  floorShadow.visible = !on && !program?.env?.floor;
   codeFloor.visible = rainWall.visible = on;
   document.body.classList.toggle('code', on);
   for (const p of props) applyLook(p);
@@ -824,6 +829,7 @@ function makeArmouryMeshes() {
 }
 async function loadGuns() {
   if (armoury) { unloadGuns(); return; }
+  if (program) { nextProgram = 'armoury'; unloadProgram(); return; }
   if (gunsLoading || restoreT > 0) return;
   if (!Object.keys(GUNS).length) toast('Loading the armoury...');
   gunsLoading = true;
@@ -957,7 +963,7 @@ function updateArmoury(dt, force = false) {
   if (a.leaveT !== null) {
     a.leaveT += dt;
     writeField(a);
-    if (a.leaveT > 1.5) { finishUnload(); restoreT = 0.25; }
+    if (a.leaveT > 1.5) { finishUnload(); if (nextProgram) runNext(); else restoreT = 0.25; }
     if (a.leaveT >= 0 && a.leaveT - dt < 0) play('whoosh', 0.8, 1);
     return;
   }
@@ -1046,7 +1052,7 @@ function loadAgents() {
   const f = viewYaw(), head = headPos(new V3());
   for (const [x, z] of [[-1.6, -6], [0, -7.2], [1.6, -6]]) {
     const o = makeAgent();
-    o.position.copy(new V3(x, 0, z).applyAxisAngle(UP, f).add(new V3(head.x, 1.0, head.z)));
+    o.position.copy(new V3(x, 0, z).applyAxisAngle(UP, f).add(new V3(head.x, rig.position.y + 1.0, head.z)));
     o.rotation.y = f;
     addProp(o, { shapes: AGENT_SHAPES, mass: 75, kind: 'agent', name: 'Agent', cell: 0.04, matT: 1.4 });
   }
@@ -1059,10 +1065,652 @@ function resetConstruct() {
   bullets.length = 0;
   if (btOn) toggleBT();
   if (codeMode) setCode(false);
-  // with the armoury out, put it away first; the chairs come back once it has gone
+  // with the armoury or a program loaded, put it away first; the chairs come back once it has gone
+  nextProgram = null;
   if (armoury) unloadGuns();
+  else if (program) unloadProgram();
   else if (restoreT <= 0) restoreConstruct();
 }
+
+// ---------------------------------------------------------------- loading programs
+// Like the armoury, each program sweeps the Construct away, materialises around where you stand (facing the way
+// you face), and unloads back to the chairs. Whatever is in your hands comes with you.
+let program = null, nextProgram = null;
+const progGroup = new THREE.Group();
+scene.add(progGroup);
+const baseBg = WHITE.clone();
+const ENV_DEFAULT = { bg: 0xf3f3f1, hemi: 1.15, hemiColor: 0xffffff, sun: 2.3, envI: 0.55 };
+function applyEnv(e) {
+  e = { ...ENV_DEFAULT, ...e };
+  baseBg.set(e.bg);
+  hemi.intensity = e.hemi; hemi.color.set(e.hemiColor);
+  sun.intensity = e.sun;
+  scene.environmentIntensity = e.envI;
+  scene.fog = e.fog ? new THREE.Fog(0, e.fog[0], e.fog[1]) : null;
+  if (scene.fog) scene.fog.color = bgColor;
+  floorShadow.visible = !codeMode && !e.floor;
+}
+const toLocalP = (P, x, z) => new V3(x - P.origin.x, 0, z - P.origin.z).applyAxisAngle(UP, -P.yaw);
+const toWorldP = (P, v) => v.clone().applyAxisAngle(UP, P.yaw).add(P.origin);
+
+// textures: one material per photo, with geometry UVs scaled to real-world size so nothing stretches
+const surfaces = {};
+function surface(name, params = {}) {
+  const key = name + JSON.stringify(params);
+  return surfaces[key] ||= new THREE.MeshStandardMaterial({ map: photoTex(`${name}_diff.jpg`, 1, true), normalMap: photoTex(`${name}_nor_gl.jpg`, 1), roughness: 0.85, ...params });
+}
+function tiledBox(w, h, d, tx = 1, ty = tx) {
+  const g = new THREE.BoxGeometry(w, h, d), uv = g.attributes.uv;
+  const dims = [[d, h], [d, h], [w, d], [w, d], [w, h], [w, h]];
+  for (let f = 0; f < 6; f++) for (let k = 0; k < 4; k++) { const i = f * 4 + k; uv.setXY(i, uv.getX(i) * dims[f][0] / tx, uv.getY(i) * dims[f][1] / ty); }
+  return g;
+}
+function tiledPlane(w, h, tx = 1, ty = tx) {
+  const g = new THREE.PlaneGeometry(w, h), uv = g.attributes.uv;
+  for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * w / tx, uv.getY(i) * h / ty);
+  return g;
+}
+function put(P, geo, mat, x = 0, y = 0, z = 0, ry = 0) {
+  const m = new THREE.Mesh(geo, mat);
+  m.position.set(x, y, z); m.rotation.y = ry;
+  P.group.add(m);
+  return m;
+}
+function addStatic(P, hx, hy, hz, x, y, z, ry = 0) {
+  const b = new CANNON.Body({ type: CANNON.Body.STATIC, shape: new CANNON.Box(new CANNON.Vec3(hx, hy, hz)) });
+  const w = toWorldP(P, new V3(x, y, z));
+  b.position.set(w.x, w.y, w.z);
+  b.quaternion.setFromAxisAngle(new CANNON.Vec3(0, 1, 0), P.yaw + ry);
+  physics.addBody(b);
+  P.bodies.push(b);
+  return b;
+}
+// a solid thing bullets chip: a mesh and its collider
+function solid(P, geo, mat, x, y, z, hx, hy, hz) {
+  const m = put(P, geo, mat, x, y, z);
+  m.userData.chip = true;
+  P.hit.push(m);
+  addStatic(P, hx, hy, hz, x, y, z);
+  return m;
+}
+const vcol = (geo, hex) => {
+  const c = new THREE.Color(hex), n = geo.attributes.position.count, a = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) { a[i * 3] = c.r; a[i * 3 + 1] = c.g; a[i * 3 + 2] = c.b; }
+  geo.setAttribute('color', new THREE.BufferAttribute(a, 3));
+  return geo;
+};
+// building fronts: a photo (or flat colour) with windows painted on; night fronts glow
+function facadeMaterial({ photo, base, cols, rows, frame, glass, night }) {
+  const mk = () => { const c = document.createElement('canvas'); c.width = c.height = 512; return c; };
+  const cv = mk(), em = night ? mk() : null;
+  const tex = new THREE.CanvasTexture(cv), etex = em ? new THREE.CanvasTexture(em) : null;
+  for (const t of [tex, etex]) if (t) { t.colorSpace = THREE.SRGBColorSpace; t.wrapS = t.wrapT = THREE.RepeatWrapping; t.anisotropy = 8; }
+  const lit = Array.from({ length: cols * rows }, () => Math.random() < 0.38);
+  const draw = img => {
+    const g = cv.getContext('2d');
+    g.fillStyle = base; g.fillRect(0, 0, 512, 512);
+    if (img) for (let y = 0; y < 512; y += 256) for (let x = 0; x < 512; x += 256) g.drawImage(img, x, y, 256, 256);
+    const e = em?.getContext('2d');
+    if (e) { e.fillStyle = '#000'; e.fillRect(0, 0, 512, 512); }
+    const cw = 512 / cols, ch = 512 / rows;
+    for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+      const x = c * cw + cw * 0.22, y = r * ch + ch * 0.2, w = cw * 0.56, h = ch * 0.6, on = night && lit[r * cols + c];
+      g.fillStyle = frame; g.fillRect(x - 5, y - 5, w + 10, h + 12);
+      const gr = g.createLinearGradient(x, y, x + w, y + h);
+      if (on) { gr.addColorStop(0, '#ffe2a0'); gr.addColorStop(1, '#d8a050'); }
+      else { gr.addColorStop(0, glass[0]); gr.addColorStop(1, glass[1]); }
+      g.fillStyle = gr; g.fillRect(x, y, w, h);
+      g.fillStyle = frame; g.fillRect(x + w / 2 - 2, y, 4, h);
+      if (on) { e.fillStyle = '#ffd890'; e.fillRect(x, y, w, h); }
+    }
+    tex.needsUpdate = true;
+    if (etex) etex.needsUpdate = true;
+  };
+  draw(null);
+  if (photo) texLoader.load(`assets/textures/${photo}`, t => draw(t.image));
+  return new THREE.MeshStandardMaterial(night
+    ? { map: tex, emissiveMap: etex, emissive: 0xffffff, emissiveIntensity: 1.1, roughness: 0.85 }
+    : { map: tex, normalMap: photo ? photoTex(photo.replace('_diff', '_nor_gl'), 1) : null, roughness: 0.85 });
+}
+
+// ---- bullet impacts on solid program geometry: a hole, flying chips and a puff of dust
+const decals = [], chips = [], puffs = [];
+const decalGeo = new THREE.CircleGeometry(0.014, 10);
+const decalMat = new THREE.MeshBasicMaterial({ color: 0x1a1816, transparent: true, opacity: 0.85, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -4 });
+const chipGeo = new THREE.BoxGeometry(0.018, 0.012, 0.015);
+const dustTex = canvasTex(64, 64, g => {
+  const gr = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+  gr.addColorStop(0, 'rgba(200,195,185,0.9)'); gr.addColorStop(1, 'rgba(200,195,185,0)');
+  g.fillStyle = gr; g.fillRect(0, 0, 64, 64);
+});
+function impactFX(hit, dir) {
+  const n = hit.face ? hit.face.normal.clone().transformDirection(hit.object.matrixWorld) : dir.clone().negate();
+  const d = new THREE.Mesh(decalGeo, decalMat);
+  d.position.copy(hit.point).addScaledVector(n, 0.002);
+  d.lookAt(_v2.copy(d.position).add(n));
+  progGroup.add(d);
+  decals.push(d);
+  if (decals.length > 150) decals.shift().removeFromParent();
+  const mat = Array.isArray(hit.object.material) ? hit.object.material[0] : hit.object.material;
+  for (let k = 0; k < 6; k++) {
+    const m = new THREE.Mesh(chipGeo, mat);
+    m.position.copy(hit.point).addScaledVector(n, 0.01);
+    progGroup.add(m);
+    const v = n.clone().multiplyScalar(rand(1, 3)).add(new V3(rand(-1.2, 1.2), rand(0, 1.5), rand(-1.2, 1.2)));
+    chips.push({ m, v, spin: new V3(rand(-20, 20), rand(-20, 20), rand(-20, 20)), life: 1.6 });
+  }
+  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: dustTex, transparent: true, depthWrite: false }));
+  s.position.copy(hit.point).addScaledVector(n, 0.05);
+  s.scale.setScalar(0.1);
+  progGroup.add(s);
+  puffs.push({ s, n, t: 0 });
+  play('thud', (0.8 + 0.4 * timeScale) * rand(1.2, 1.5), 0.35);
+}
+function updateFX(dt, sdt) {
+  const floor = rig.position.y;
+  for (let i = chips.length - 1; i >= 0; i--) {
+    const c = chips[i];
+    c.v.y -= 9.8 * sdt;
+    c.m.position.addScaledVector(c.v, sdt);
+    c.m.rotation.x += c.spin.x * sdt; c.m.rotation.y += c.spin.y * sdt;
+    if (c.m.position.y < floor + 0.006) { c.m.position.y = floor + 0.006; c.v.multiplyScalar(0.4); c.v.y = Math.abs(c.v.y); }
+    if ((c.life -= sdt) <= 0) { c.m.removeFromParent(); chips.splice(i, 1); }
+  }
+  for (let i = puffs.length - 1; i >= 0; i--) {
+    const p = puffs[i];
+    p.t += sdt;
+    p.s.scale.setScalar(0.1 + p.t * 0.9);
+    p.s.position.addScaledVector(p.n, sdt * 0.3);
+    p.s.material.opacity = Math.max(0, 0.8 - p.t * 0.6);
+    if (p.t > 1.3) { p.s.removeFromParent(); p.s.material.dispose(); puffs.splice(i, 1); }
+  }
+}
+function clearFX() {
+  for (const d of decals) d.removeFromParent();
+  for (const c of chips) c.m.removeFromParent();
+  for (const p of puffs) p.s.removeFromParent();
+  decals.length = chips.length = puffs.length = 0;
+}
+
+// ---- people for the street: one vertex-coloured body mesh plus two swinging legs, so a crowd stays cheap
+const crowdMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.75 });
+const SKIN = [0xe6bea0, 0xc89a7c, 0x8d5e44, 0x5b3a29, 0xf0cdb4];
+const COATS = [0x2b2f36, 0x4a3b2c, 0x6b6f75, 0x1d2b44, 0x5a2a28, 0x7b6a52, 0x33402f, 0x222222];
+function makePerson({ coat, pants, skin, hair, dress = null, blonde = false }) {
+  const g = new THREE.Group();
+  const parts = [];
+  const add = (geo, col, x, y, z, rx = 0, rz = 0) => parts.push(vcol(xf(geo, x, y, z, rx, 0, rz), col));
+  if (dress) {
+    add(new THREE.CylinderGeometry(0.15, 0.27, 0.62, 14), dress, 0, 0.62, 0);
+    add(new THREE.BoxGeometry(0.33, 0.42, 0.19), dress, 0, 1.15, 0);
+    for (const s of [-1, 1]) add(new THREE.BoxGeometry(0.07, 0.5, 0.07), skin, s * 0.2, 1.1, 0, 0, s * 0.08);
+  } else {
+    add(new THREE.BoxGeometry(0.44, 0.78, 0.26), coat, 0, 1.13, 0);
+    for (const s of [-1, 1]) add(new THREE.BoxGeometry(0.1, 0.6, 0.11), coat, s * 0.27, 1.15, 0, 0, s * 0.06);
+    for (const s of [-1, 1]) add(new THREE.BoxGeometry(0.07, 0.09, 0.07), skin, s * 0.29, 0.82, 0);
+  }
+  add(new THREE.CylinderGeometry(0.045, 0.05, 0.1, 10), skin, 0, 1.55, 0);
+  add(new THREE.SphereGeometry(0.1, 14, 10).scale(1, 1.18, 1.05), skin, 0, 1.69, 0);
+  add(new THREE.SphereGeometry(0.104, 14, 7, 0, Math.PI * 2, 0, Math.PI * 0.45).scale(1, 1.18, 1.05), hair, 0, 1.7, -0.006);
+  if (blonde) add(new THREE.BoxGeometry(0.21, 0.3, 0.08), hair, 0, 1.55, -0.08);
+  const body = new THREE.Mesh(mergeGeometries(parts), crowdMat);
+  g.add(body);
+  const legs = [-1, 1].map(s => {
+    const lg = mergeGeometries([
+      vcol(xf(new THREE.BoxGeometry(dress ? 0.08 : 0.14, 0.82, dress ? 0.08 : 0.15), 0, -0.41, 0), dress ? skin : pants),
+      vcol(xf(new THREE.BoxGeometry(0.11, 0.06, 0.26), 0, -0.8, 0.04), 0x111111),
+    ]);
+    const m = new THREE.Mesh(lg, crowdMat);
+    m.position.set(s * 0.1, dress ? 0.86 : 0.86, 0);
+    g.add(m);
+    return m;
+  });
+  return { obj: g, legs };
+}
+
+// ---------------------------------------------------------------- LOBBY
+function buildLobby(P) {
+  const stone = surface('marble_01', { roughness: 0.3 });
+  const darkStone = surface('concrete_tile_facade', { roughness: 0.45, color: 0xc9c1b4 });
+  const plaster = new THREE.MeshStandardMaterial({ color: 0xf1ede6, roughness: 0.9 });
+  const W = 16, H = 7, Z0 = 4, Z1 = -30, D = Z0 - Z1, zc = (Z0 + Z1) / 2;
+  const floor = put(P, tiledPlane(W, D, 2.4).rotateX(-Math.PI / 2), stone, 0, 0.003, zc);
+  floor.userData.chip = true; P.hit.push(floor);
+  solid(P, tiledBox(0.4, H, D, 2.4), stone, -W / 2 - 0.2, H / 2, zc, 0.2, H / 2, D / 2);
+  solid(P, tiledBox(0.4, H, D, 2.4), stone, W / 2 + 0.2, H / 2, zc, 0.2, H / 2, D / 2);
+  solid(P, tiledBox(W, H, 0.4, 2.4), stone, 0, H / 2, Z1 - 0.2, W / 2, H / 2, 0.2);
+  solid(P, tiledBox(W, H, 0.4, 2.4), stone, 0, H / 2, Z0 + 0.2, W / 2, H / 2, 0.2);
+  // glass entrance doors behind you, dark stone skirting, a lit ceiling
+  const glass = new THREE.MeshStandardMaterial({ color: 0x223038, metalness: 0.6, roughness: 0.08 });
+  for (const x of [-1.6, 0, 1.6]) put(P, new THREE.BoxGeometry(1.4, 2.6, 0.06), glass, x, 1.3, Z0 - 0.02);
+  for (const [x, z, w, d] of [[-W / 2 + 0.03, zc, 0.06, D], [W / 2 - 0.03, zc, 0.06, D], [0, Z1 + 0.03, W, 0.06]]) put(P, new THREE.BoxGeometry(w, 0.18, d), darkStone, x, 0.09, z);
+  const ceil = put(P, new THREE.PlaneGeometry(W, D).rotateX(Math.PI / 2), plaster, 0, H, zc);
+  ceil.userData.noShadow = true;
+  const lamp = new THREE.MeshBasicMaterial({ color: 0xfffaf0 });
+  for (const x of [-4, 0, 4]) for (let z = Z0 - 4; z > Z1 + 1; z -= 6) put(P, new THREE.BoxGeometry(1.6, 0.05, 1.6), lamp, x, H - 0.03, z).userData.noShadow = true;
+  // the pillars
+  for (const x of [-4, 4]) for (const z of [-4, -10, -16, -22]) {
+    solid(P, tiledBox(1, H - 0.6, 1, 2.4), stone, x, H / 2, z, 0.5, H / 2, 0.5);
+    put(P, tiledBox(1.3, 0.3, 1.3, 1.2), darkStone, x, 0.15, z);
+    put(P, tiledBox(1.3, 0.3, 1.3, 1.2), darkStone, x, H - 0.15, z);
+  }
+  // metal detectors and the security desk
+  const grey = new THREE.MeshStandardMaterial({ color: 0xb9b7b0, roughness: 0.5, metalness: 0.2 });
+  for (const x of [-1.6, 1.6]) {
+    for (const s of [-1, 1]) put(P, new THREE.BoxGeometry(0.14, 2.2, 0.55), grey, x + s * 0.48, 1.1, -2.2);
+    put(P, new THREE.BoxGeometry(1.1, 0.24, 0.55), grey, x, 2.3, -2.2);
+  }
+  solid(P, tiledBox(4.6, 1.1, 0.9, 1.2), darkStone, 0, 0.55, -25, 2.3, 0.55, 0.45);
+  put(P, tiledBox(4.8, 0.06, 1.1, 1.2), stone, 0, 1.13, -25);
+  // guards
+  const navy = new THREE.MeshStandardMaterial({ color: 0x1c2740, roughness: 0.6 });
+  for (const [x, z] of [[-2.6, -2.8], [2.6, -2.8], [-1.2, -24], [1.3, -24.1]]) {
+    const o = makeAgent();
+    o.traverse(m => { if (m.isMesh && m.material === M.suit) m.material = navy; if (m.isMesh && m.material === M.shades && m.position.y > 0.6) m.visible = false; });
+    const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.115, 0.115, 0.08, 16), navy);
+    cap.position.y = 0.83; o.add(cap);
+    const brim = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.012, 0.09), M.shades);
+    brim.position.set(0, 0.8, 0.12); o.add(brim);
+    o.position.copy(toWorldP(P, new V3(x, 1.0, z)));
+    o.rotation.y = P.yaw;
+    addProp(o, { shapes: AGENT_SHAPES, mass: 75, kind: 'agent', name: 'Guard', cell: 0.04, matT: 1.6 });
+  }
+  // "Guns. Lots of guns." - a kit laid out on a bench at your feet
+  const bench = new THREE.MeshStandardMaterial({ color: 0x2a2d31, roughness: 0.6, metalness: 0.3 });
+  put(P, new THREE.BoxGeometry(2.4, 0.06, 0.7), bench, 1.6, 0.7, 0.6);
+  for (const s of [-1, 1]) put(P, new THREE.BoxGeometry(0.06, 0.7, 0.6), bench, 1.6 + s * 1.1, 0.35, 0.6);
+  addStatic(P, 1.2, 0.35, 0.35, 1.6, 0.37, 0.6);
+  P.kit = () => {
+    ['mp5', 'p226', 'deagle', 'mk14', 'glock19', 'mpx'].forEach((k, i) => {
+      if (!GUNS[k]) return;
+      const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, Math.PI / 2 + rand(-0.15, 0.15), Math.PI / 2, 'YXZ'));
+      const pos = toWorldP(P, new V3(0.65 + i * 0.38, 0.79, 0.6));
+      const g = spawnGun(k, new THREE.Matrix4().compose(pos, q.premultiply(new THREE.Quaternion().setFromAxisAngle(UP, P.yaw)), ONE), 1.6);
+      g.body.velocity.setZero();
+    });
+  };
+  P.bounds = [-W / 2 + 0.35, W / 2 - 0.35, Z1 + 0.35, Z0 - 0.35];
+  P.env = { bg: 0xe8e4dc, hemi: 0.95, sun: 1.6, envI: 0.65, floor: true };
+  P.toast = 'Lobby loaded.';
+}
+
+// ---------------------------------------------------------------- JUMP PROGRAM
+function buildJump(P) {
+  const H = 32, GAP = 11;
+  const A = { x: 0, z: 0, w: 14, d: 14 }, B = { x: 0, z: -7 - GAP - 7, w: 14, d: 14 };
+  const night = facadeMaterial({ base: '#24272d', cols: 4, rows: 4, frame: '#15171b', glass: ['#141a24', '#0b0e14'], night: true });
+  const roof = surface('concrete_floor_worn_001', { roughness: 0.95, color: 0x9a9a9a });
+  for (const R of [A, B]) {
+    const m = put(P, tiledBox(R.w, H, R.d, 7), [night, night, roof, night, night, night], R.x, H / 2, R.z);
+    m.userData.chip = true; P.hit.push(m);
+    addStatic(P, R.w / 2, H / 2, R.d / 2, R.x, H / 2, R.z);
+    // low parapets, except on the edge you jump from and the one you land on
+    const lip = new THREE.MeshStandardMaterial({ color: 0x55585e, roughness: 0.9 });
+    for (const s of [-1, 1]) {
+      put(P, new THREE.BoxGeometry(0.3, 0.45, R.d), lip, R.x + s * (R.w / 2 - 0.15), H + 0.22, R.z);
+      addStatic(P, 0.15, 0.22, R.d / 2, R.x + s * (R.w / 2 - 0.15), H + 0.22, R.z);
+    }
+    const far = R === A ? R.z + R.d / 2 - 0.15 : R.z - R.d / 2 + 0.15;
+    put(P, new THREE.BoxGeometry(R.w, 0.45, 0.3), lip, R.x, H + 0.22, far);
+    addStatic(P, R.w / 2, 0.22, 0.15, R.x, H + 0.22, far);
+  }
+  // rooftop clutter: air-con units on yours, a water tower on the far roof
+  const metal = new THREE.MeshStandardMaterial({ color: 0x7c8086, metalness: 0.6, roughness: 0.5 });
+  for (const [x, z] of [[-4.5, 4.5], [4.8, 2], [-5, -1]]) { put(P, new THREE.BoxGeometry(1.6, 1.1, 1.2), metal, x, H + 0.55, z); addStatic(P, 0.8, 0.55, 0.6, x, H + 0.55, z); }
+  const wood = new THREE.MeshStandardMaterial({ color: 0x5a3e2a, roughness: 0.9 });
+  put(P, new THREE.CylinderGeometry(1.3, 1.3, 2, 20), wood, 3.5, H + 3.2, B.z - 2.5);
+  put(P, new THREE.ConeGeometry(1.45, 0.8, 20), metal, 3.5, H + 4.6, B.z - 2.5);
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) put(P, new THREE.CylinderGeometry(0.06, 0.06, 2.2, 6), metal, 3.5 + sx * 0.9, H + 1.1, B.z - 2.5 + sz * 0.9);
+  // the city below, as one mesh
+  const boxes = [];
+  for (let i = -9; i <= 9; i++) for (let j = -12; j <= 6; j++) {
+    const x = i * 24 + rand(-3, 3), z = j * 24 + rand(-3, 3);
+    if (Math.abs(x) < 20 && z > -48 && z < 18) continue;
+    const w = rand(12, 19), d = rand(12, 19), h = rand(14, 95);
+    boxes.push(xf(tiledBox(w, h, d, 7), x, h / 2, z));
+  }
+  const city = put(P, mergeGeometries(boxes), night);
+  city.userData.noShadow = true;
+  const street = put(P, tiledPlane(600, 600, 8).rotateX(-Math.PI / 2), surface('asphalt_02', { roughness: 0.95, color: 0x555555 }), 0, 0.01, -60);
+  street.userData.noShadow = true;
+  // stars
+  const sp = new Float32Array(1500);
+  for (let i = 0; i < 500; i++) { const a = Math.random() * Math.PI * 2, e = rand(0.15, 1.4), r = 380; sp.set([Math.cos(a) * Math.cos(e) * r, Math.sin(e) * r + H, Math.sin(a) * Math.cos(e) * r], i * 3); }
+  const stars = new THREE.Points(new THREE.BufferGeometry().setAttribute('position', new THREE.BufferAttribute(sp, 3)), new THREE.PointsMaterial({ color: 0xcfd8ff, size: 1.2, fog: false }));
+  P.group.add(stars);
+  P.ground = (x, z) => {
+    const l = toLocalP(P, x, z);
+    for (const R of [A, B]) if (Math.abs(l.x - R.x) <= R.w / 2 && Math.abs(l.z - R.z) <= R.d / 2) return H;
+    return 0;
+  };
+  P.spawn = new V3(0, H, 4.5);
+  P.jump = { v: 7, boost: 4.6, max: 11, doomed: true };
+  P.onCrash = () => {
+    play('thud', 0.4, 1);
+    transition(() => { placeAt(P, P.spawn); toast(player.jumps <= 1 ? 'Nobody makes the first jump.' : 'Free your mind.'); });
+  };
+  P.env = { bg: 0x0a0f1c, fog: [30, 220], hemi: 0.45, hemiColor: 0x9aaee0, sun: 0.6, envI: 0.25, floor: true };
+  P.toast = 'Free your mind. Run, then jump.';
+}
+
+// ---------------------------------------------------------------- DOJO
+function buildDojo(P) {
+  const S = 12, H = 4.2, zc = -3;
+  const floor = surface('hinoki_planks', { roughness: 0.55 });
+  const cedar = surface('japanese_cedar_planks', { roughness: 0.6, color: 0x9a7356 });
+  put(P, tiledPlane(S, S, 1.6).rotateX(-Math.PI / 2), floor, 0, 0.003, zc);
+  // glowing paper screens with a wooden lattice
+  const paper = canvasTex(512, 512, (g, w, h) => {
+    g.fillStyle = '#f4ead4'; g.fillRect(0, 0, w, h);
+    for (let i = 0; i < 300; i++) { g.fillStyle = `rgba(160,140,100,${rand(0.02, 0.06)})`; g.fillRect(rand(0, w), rand(0, h), rand(4, 40), 1); }
+    g.fillStyle = '#3a2818';
+    for (let c = 1; c < 4; c++) g.fillRect(c * w / 4 - 3, 0, 6, h);
+    for (let r = 1; r < 6; r++) g.fillRect(0, r * h / 6 - 3, w, 6);
+    g.lineWidth = 22; g.strokeStyle = '#2e1f12'; g.strokeRect(0, 0, w, h);
+  });
+  paper.wrapS = paper.wrapT = THREE.RepeatWrapping;
+  const shoji = new THREE.MeshStandardMaterial({ map: paper, emissive: 0xfff0d0, emissiveMap: paper, emissiveIntensity: 0.45, roughness: 0.95 });
+  for (const [x, z, ry] of [[0, zc - S / 2, 0], [0, zc + S / 2, Math.PI], [-S / 2, zc, Math.PI / 2], [S / 2, zc, -Math.PI / 2]]) {
+    put(P, tiledPlane(S, H, 1.8, 2.1).translate(0, H / 2, 0), shoji, x, 0, z, ry);
+  }
+  for (const [hx, hz, x, z] of [[S / 2, 0.1, 0, zc - S / 2 - 0.1], [S / 2, 0.1, 0, zc + S / 2 + 0.1], [0.1, S / 2, -S / 2 - 0.1, zc], [0.1, S / 2, S / 2 + 0.1, zc]]) addStatic(P, hx, H / 2, hz, x, H / 2, z);
+  // cedar posts, beams and ceiling
+  for (let k = -2; k <= 2; k++) for (const s of [-1, 1]) {
+    put(P, tiledBox(0.2, H, 0.2, 1), cedar, k * S / 4, H / 2, zc + s * (S / 2 - 0.1));
+    put(P, tiledBox(0.2, H, 0.2, 1), cedar, s * (S / 2 - 0.1), H / 2, zc + k * S / 4);
+  }
+  for (const s of [-1, 1]) { put(P, tiledBox(S, 0.25, 0.25, 1), cedar, 0, H - 0.12, zc + s * 2); put(P, tiledBox(0.25, 0.25, S, 1), cedar, s * 2, H - 0.12, zc); }
+  const ceil = put(P, tiledPlane(S, S, 1.6).rotateX(Math.PI / 2), cedar, 0, H, zc);
+  ceil.userData.noShadow = true;
+  // paper lanterns
+  const lantern = new THREE.MeshStandardMaterial({ color: 0xffe6b8, emissive: 0xffcf88, emissiveIntensity: 0.9 });
+  for (const x of [-3, 3]) put(P, new THREE.CylinderGeometry(0.22, 0.22, 0.5, 16), lantern, x, H - 0.8, zc + 3).userData.noShadow = true;
+  // wooden training dummy
+  const dx = -2.4, dz = zc - 2;
+  put(P, new THREE.CylinderGeometry(0.14, 0.15, 1.6, 16), cedar, dx, 0.8, dz);
+  addStatic(P, 0.14, 0.8, 0.14, dx, 0.8, dz);
+  for (const [y, ang, side] of [[1.32, 0.35, -1], [1.32, 0.35, 1], [1.05, 0, 0]]) {
+    const arm = put(P, new THREE.CylinderGeometry(0.028, 0.032, 0.48, 10).rotateX(Math.PI / 2).translate(0, 0, 0.24), cedar, dx + side * 0.07, y, dz + 0.1);
+    arm.rotation.y = side * ang;
+  }
+  put(P, new THREE.CylinderGeometry(0.03, 0.03, 0.55, 10).rotateZ(0.5), cedar, dx, 0.45, dz + 0.22);
+  // the heavy bag hangs from a hook and swings when you hit it
+  const bx = 2.2, bz = zc - 2, hookY = 3.05;
+  const bagObj = new THREE.Group();
+  const bagMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.17, 0.17, 1.1, 22), new THREE.MeshPhysicalMaterial({ ...LEATHER, color: 0x5a2a20, roughness: 0.9, clearcoat: 0.2 }));
+  bagObj.add(bagMesh);
+  for (const y of [0.55, -0.55]) { const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.172, 0.172, 0.04, 22), M.black); cap.position.y = y; bagObj.add(cap); }
+  P.group.add(bagObj);
+  bagObj.userData.chip = false;
+  const bagStart = toWorldP(P, new V3(bx, hookY - 1.45, bz));
+  const bag = new CANNON.Body({ mass: 32, shape: new CANNON.Cylinder(0.17, 0.17, 1.1, 12), linearDamping: 0.25, angularDamping: 0.6 });
+  bag.position.set(bagStart.x, bagStart.y, bagStart.z);
+  physics.addBody(bag);
+  P.bodies.push(bag);
+  const hookW = toWorldP(P, new V3(bx, hookY, bz));
+  const hook = new CANNON.Body({ type: CANNON.Body.STATIC });
+  hook.position.set(hookW.x, hookW.y, hookW.z);
+  physics.addBody(hook);
+  P.bodies.push(hook);
+  const pin = new CANNON.PointToPointConstraint(bag, new CANNON.Vec3(0, 1.45, 0), hook, new CANNON.Vec3(0, 0, 0));
+  physics.addConstraint(pin);
+  const chain = new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.008, 1, 6).translate(0, 0.5, 0), M.steel);
+  scene.add(chain);
+  bag.addEventListener('collide', e => {
+    const s = Math.abs(e.contact.getImpactVelocityAlongNormal());
+    if (s < 0.6 || realT - (bag.lastHit || 0) < 0.08) return;
+    bag.lastHit = realT;
+    play('thud', rand(0.7, 0.9) * (0.4 + 0.6 * timeScale), Math.min(1, s * 0.25));
+    for (const side of ['left', 'right']) if (e.body === handBodies[side]) pulse(side, Math.min(1, s * 0.2), 40);
+  });
+  bagMesh.userData.onHit = (hit, dir) => { bag.wakeUp(); bag.applyImpulse(new CANNON.Vec3(dir.x * 25, dir.y * 25, dir.z * 25), new CANNON.Vec3(hit.point.x - bag.position.x, hit.point.y - bag.position.y, hit.point.z - bag.position.z)); };
+  P.hit.push(bagMesh);
+  const groupQinv = new THREE.Quaternion().setFromAxisAngle(UP, -P.yaw);
+  P.update = () => {
+    // the physics body lives in world space; the mesh lives inside the program's group
+    bagObj.position.copy(P.group.worldToLocal(_v2.set(bag.position.x, bag.position.y, bag.position.z)));
+    bagObj.quaternion.copy(groupQinv).multiply(_q.set(bag.quaternion.x, bag.quaternion.y, bag.quaternion.z, bag.quaternion.w));
+    bagObj.updateMatrixWorld();
+    // the chain runs from the top of the bag to the hook
+    const top = bagObj.localToWorld(_v2.set(0, 0.55, 0));
+    chain.position.copy(top);
+    chain.scale.y = top.distanceTo(hookW);
+    chain.quaternion.setFromUnitVectors(UP, _v.copy(hookW).sub(top).normalize());
+  };
+  P.dispose = () => { physics.removeConstraint(pin); chain.removeFromParent(); };
+  P.bounds = [-S / 2 + 0.3, S / 2 - 0.3, zc - S / 2 + 0.3, zc + S / 2 - 0.3];
+  P.env = { bg: 0x1b140e, hemi: 0.75, hemiColor: 0xfff0dc, sun: 1.2, envI: 0.5, floor: true };
+  P.toast = 'I know kung fu.';
+}
+
+// ---------------------------------------------------------------- RED DRESS STREET
+function buildStreet(P) {
+  const Z0 = 20, Z1 = -120, L = Z0 - Z1, zc = (Z0 + Z1) / 2;
+  put(P, tiledPlane(10, L, 6).rotateX(-Math.PI / 2), surface('asphalt_02', { roughness: 0.9 }), 0, 0.003, zc);
+  const pave = surface('concrete_pavement', { roughness: 0.9 });
+  for (const s of [-1, 1]) put(P, tiledBox(4, 0.15, L, 2), pave, s * 7, 0.075, zc);
+  const paint = new THREE.MeshStandardMaterial({ color: 0xe8e4d6, roughness: 0.8 });
+  const dashes = [];
+  for (let z = Z0 - 2; z > Z1; z -= 6) dashes.push(xf(new THREE.BoxGeometry(0.12, 0.01, 3), 0, 0.008, z));
+  put(P, mergeGeometries(dashes), paint);
+  // two rows of buildings, brick and concrete, as one mesh each
+  const brick = facadeMaterial({ photo: 'brick_wall_003_diff.jpg', base: '#7a4a38', cols: 2, rows: 2, frame: '#2b2622', glass: ['#3c4a55', '#1d252c'] });
+  const conc = facadeMaterial({ photo: 'concrete_tile_facade_diff.jpg', base: '#5a5c60', cols: 2, rows: 2, frame: '#1f2124', glass: ['#4a5966', '#232c35'] });
+  const rows = { brick: [], conc: [] };
+  for (const s of [-1, 1]) {
+    let z = Z0;
+    while (z > Z1) {
+      const w = rand(10, 18), h = rand(14, 34), kind = Math.random() < 0.55 ? 'brick' : 'conc';
+      rows[kind].push(xf(tiledBox(12, h, w, 8, 7), s * 15, h / 2, z - w / 2));
+      z -= w + 0.05;
+    }
+    addStatic(P, 6, 15, L / 2, s * 15, 15, zc);
+  }
+  for (const [k, mat] of [['brick', brick], ['conc', conc]]) { const m = put(P, mergeGeometries(rows[k]), mat); m.userData.chip = true; P.hit.push(m); }
+  // street lamps
+  const lampParts = [];
+  for (let z = Z0 - 4; z > Z1; z -= 14) for (const s of [-1, 1]) {
+    lampParts.push(xf(new THREE.CylinderGeometry(0.06, 0.08, 4.6, 8), s * 5.4, 2.3, z));
+    lampParts.push(xf(new THREE.BoxGeometry(0.9, 0.06, 0.06), s * 5.0, 4.55, z));
+    lampParts.push(xf(new THREE.BoxGeometry(0.4, 0.16, 0.24), s * 4.6, 4.5, z));
+  }
+  put(P, mergeGeometries(lampParts), new THREE.MeshStandardMaterial({ color: 0x23302a, metalness: 0.5, roughness: 0.5 }));
+  // the crowd walks both ways along both pavements
+  const walkers = [];
+  for (let i = 0; i < 26; i++) {
+    const side = i % 2 ? 1 : -1, dir = Math.random() < 0.5 ? 1 : -1;
+    const p = makePerson({ coat: COATS[i % COATS.length], pants: [0x1a1a1a, 0x2e3440, 0x3d3529][i % 3], skin: SKIN[i % SKIN.length], hair: [0x1a1410, 0x3b2a1a, 0x6b4a2a, 0x111111][i % 4] });
+    p.lane = side * rand(5.6, 8.4); p.z = rand(Z1, Z0); p.dir = dir; p.speed = rand(1.15, 1.5); p.phase = rand(0, 6);
+    P.group.add(p.obj);
+    walkers.push(p);
+  }
+  // the woman in the red dress walks towards you
+  const red = makePerson({ dress: 0xc8101e, skin: 0xf0cdb4, hair: 0xe6c27a, blonde: true });
+  red.lane = -6.3; red.z = -26; red.dir = 1; red.speed = 1.05; red.phase = 0; red.lady = true;
+  P.group.add(red.obj);
+  walkers.push(red);
+  let awayT = 0, turned = false;
+  const head = new V3(), fwd = new V3();
+  P.update = (dt, sdt) => {
+    headPos(head);
+    camera.getWorldDirection(fwd);
+    const me = toLocalP(P, head.x, head.z);
+    for (const p of walkers) {
+      p.z += p.dir * p.speed * sdt;
+      if (p.z > Z0) p.z = Z1 + 1; else if (p.z < Z1) p.z = Z0 - 1;
+      // step round you
+      const dx = p.lane - me.x, dz = p.z - me.z;
+      p.dodge = (p.dodge || 0) + ((Math.hypot(dx, dz) < 1.1 ? Math.sign(dx || 1) * 0.7 : 0) - (p.dodge || 0)) * Math.min(1, sdt * 3);
+      p.phase += p.speed * sdt * 4.4;
+      const sw = Math.sin(p.phase) * 0.45;
+      p.legs[0].rotation.x = sw; p.legs[1].rotation.x = -sw;
+      p.obj.position.set(p.lane + p.dodge, 0.15 + Math.abs(Math.cos(p.phase)) * 0.025, p.z);
+      p.obj.rotation.y = p.dir > 0 ? 0 : Math.PI;
+    }
+    // look away while she's close, and when you look back she's an Agent
+    if (!turned) {
+      const w = red.obj.getWorldPosition(_v2), to = w.clone().sub(head), dist = to.length();
+      const looking = to.normalize().dot(fwd) > 0.35;
+      awayT = dist < 11 && !looking ? awayT + dt : 0;
+      if (awayT > 0.7) {
+        turned = true;
+        red.obj.visible = false;
+        walkers.splice(walkers.indexOf(red), 1);
+        const o = makeAgent();
+        o.position.set(w.x, rig.position.y + 1.15, w.z);
+        o.rotation.y = Math.atan2(head.x - w.x, head.z - w.z);
+        addProp(o, { shapes: AGENT_SHAPES, mass: 75, kind: 'agent', name: 'Agent', cell: 0.04 });
+        play('whoosh', 0.5, 0.9);
+        toast('Look again.');
+      }
+    }
+  };
+  P.ground = (x, z) => (Math.abs(toLocalP(P, x, z).x) >= 5 ? 0.15 : 0);
+  P.spawn = new V3(-7, 0.15, 2);
+  P.bounds = [-8.6, 8.6, Z1 + 2, Z0 - 2];
+  P.env = { bg: 0xdfe2e4, fog: [18, 90], hemi: 1.0, sun: 2.1, envI: 0.6, floor: true };
+  P.toast = 'Another training program.';
+}
+
+const PROGRAM_BUILDERS = { lobby: buildLobby, jump: buildJump, dojo: buildDojo, street: buildStreet };
+function loadProgram(key) {
+  if (key === 'armoury') { loadGuns(); return; }
+  if (program?.key === key) { unloadProgram(); return; }
+  if (program || armoury) { nextProgram = key; if (program) unloadProgram(); else unloadGuns(); return; }
+  if (restoreT > 0 || gunsLoading) return;
+  startProgram(key);
+}
+function runNext() {
+  const k = nextProgram;
+  nextProgram = null;
+  if (k === 'armoury') loadGuns(); else startProgram(k);
+}
+function startProgram(key) {
+  const head = headPos(new V3());
+  const P = { key, origin: new V3(head.x, 0, head.z), yaw: viewYaw(), group: new THREE.Group(), bodies: [], hit: [], t: 0, matT: 1.6, leaving: null, returnRig: rig.position.clone() };
+  P.group.position.copy(P.origin);
+  P.group.rotation.y = P.yaw;
+  P.group.updateMatrixWorld(true);
+  if (sweepAway(props.filter(p => !p.hold))) P.t = -SWEEP_WAIT;
+  pendingPills.length = 0;
+  PROGRAM_BUILDERS[key](P);
+  prepMeshes(P.group);
+  P.group.traverse(o => { if (o.userData.noShadow) o.castShadow = o.receiveShadow = false; });
+  P.group.visible = P.t >= 0;
+  progGroup.add(P.group);
+  setLook(P.group, true, 0.04);
+  program = P;
+  if (P.t >= 0) revealProgram(P);
+  drawWrist();
+}
+function placeAt(P, local) {
+  const w = toWorldP(P, local), head = headPos(new V3());
+  rig.position.x += w.x - head.x;
+  rig.position.z += w.z - head.z;
+  rig.position.y = w.y;
+  player.vy = 0; player.grounded = true; player.air.set(0, 0, 0);
+}
+function revealProgram(P) {
+  P.group.visible = true;
+  if (P.kit) loadGunLibrary().then(() => { if (program === P) P.kit(); }).catch(() => {});
+  applyEnv(P.env);
+  if (P.spawn) placeAt(P, P.spawn);
+  player.jumps = 0;
+  play('whoosh', 1, 1);
+  toast(P.toast);
+}
+function unloadProgram() {
+  const P = program;
+  if (!P || P.leaving !== null) return;
+  P.leaving = 0;
+  sweepAway(props.filter(p => !p.hold));
+  setLook(P.group, true, 0.04);
+  play('whoosh', 0.8, 1);
+  drawWrist();
+}
+function disposeProgram() {
+  const P = program;
+  P.group.removeFromParent();
+  for (const b of P.bodies) physics.removeBody(b);
+  P.dispose?.();
+  clearFX();
+  applyEnv({});
+  if (P.spawn) rig.position.copy(P.returnRig);
+  rig.position.y = 0;
+  player.vy = 0; player.grounded = true; player.air.set(0, 0, 0);
+  program = null;
+  drawWrist();
+}
+function updateProgram(dt, sdt) {
+  const P = program;
+  if (!P) return;
+  if (P.leaving !== null) {
+    if ((P.leaving += dt) > 0.9) { disposeProgram(); if (nextProgram) runNext(); else restoreT = 0.25; }
+    return;
+  }
+  if (P.t < 0) { if ((P.t += dt) >= 0) revealProgram(P); return; }
+  P.t += dt;
+  if (P.matT > 0 && (P.matT -= dt) <= 0) setLook(P.group, codeMode, 0.04);
+  P.update?.(dt, sdt);
+}
+
+// ---------------------------------------------------------------- the player's feet: ground, gravity, jumping
+const player = { vy: 0, grounded: true, air: new V3(), jumps: 0 };
+const groundAt = (x, z) => (program && program.t >= 0 && program.leaving === null && program.ground ? program.ground(x, z) : 0);
+function jump() {
+  if (!player.grounded) return;
+  const J = program?.t >= 0 ? program.jump : null;
+  player.vy = J ? J.v : 3.4;
+  player.air.copy(moveVel).multiplyScalar(J ? J.boost : 1);
+  const max = J ? J.max : 6;
+  if (player.air.length() > max) player.air.setLength(max);
+  // nobody makes the first jump
+  if (J?.doomed && player.jumps++ === 0) player.air.multiplyScalar(0.5);
+  player.grounded = false;
+  play('whoosh', 1.7, 0.35);
+}
+const _feet = new V3();
+const _prevRig = new V3();
+function movePlayer(dt) {
+  _prevRig.copy(rig.position);
+  rig.position.addScaledVector(player.grounded ? moveVel : player.air, dt);
+  // where your head is, from the rig and the camera's offset in it
+  _feet.copy(camera.position).setY(0).applyQuaternion(rig.quaternion).add(rig.position);
+  // anything much higher than your feet is a wall: you don't walk (or fall) into it
+  if (groundAt(_feet.x, _feet.z) > rig.position.y + 0.5) {
+    _feet.x -= rig.position.x - _prevRig.x; _feet.z -= rig.position.z - _prevRig.z;
+    rig.position.x = _prevRig.x; rig.position.z = _prevRig.z;
+    player.air.set(0, 0, 0);
+  }
+  const P = program;
+  if (P?.bounds && P.t >= 0 && P.leaving === null) {
+    const l = toLocalP(P, _feet.x, _feet.z), b = P.bounds;
+    const cx = clamp(l.x, b[0], b[1]), cz = clamp(l.z, b[2], b[3]);
+    if (cx !== l.x || cz !== l.z) {
+      const push = new V3(cx - l.x, 0, cz - l.z).applyAxisAngle(UP, P.yaw);
+      rig.position.add(push); _feet.add(push);
+    }
+  }
+  player.vy -= 9.8 * dt;
+  rig.position.y += player.vy * dt;
+  const g = groundAt(_feet.x, _feet.z);
+  if (rig.position.y <= g) {
+    const impact = -player.vy;
+    rig.position.y = g;
+    player.vy = 0;
+    if (!player.grounded) {
+      player.grounded = true;
+      if (impact > 14 && P?.onCrash) P.onCrash();
+      else if (impact > 3) play('thud', 0.6, 0.5);
+    }
+  } else if (rig.position.y > g + 0.05 && player.grounded) {
+    // walked off an edge
+    player.grounded = false;
+    player.air.copy(moveVel);
+  }
+  if (rig.position.y < -60) { rig.position.y = 0; player.vy = 0; }
+}
+
 
 // ---------------------------------------------------------------- player & head
 const P = { yaw: 0, pitch: 0 };
@@ -1255,7 +1903,7 @@ function hitProp(p, point, dir) {
   p.body.applyImpulse(new CANNON.Vec3(dir.x * j, dir.y * j, dir.z * j), new CANNON.Vec3(point.x - p.body.position.x, point.y - p.body.position.y, point.z - p.body.position.z));
 }
 function updateBullets(dt, sdt) {
-  const targets = props.map(p => p.obj).concat(instGroup.children, armoury ? armoury.meshes.frames : []);
+  const targets = props.map(p => p.obj).concat(instGroup.children, armoury ? armoury.meshes.frames : [], program && program.t >= 0 ? program.hit : []);
   for (let i = bullets.length - 1; i >= 0; i--) {
     const b = bullets[i];
     const step = b.speed * sdt;
@@ -1267,6 +1915,8 @@ function updateBullets(dt, sdt) {
       end = hit.point;
       const t = targetOf(hit), p = t && realize(t);
       if (p) hitProp(p, hit.point, b.dir);
+      else if (hit.object.userData.onHit) hit.object.userData.onHit(hit, b.dir);
+      else if (hit.object.userData.chip) impactFX(hit, b.dir);
     }
     else if (b.dir.y < 0 && b.pos.y + b.dir.y * step < 0) end = b.pos.clone().addScaledVector(b.dir, -b.pos.y / b.dir.y);
     if (end) {
@@ -1354,27 +2004,37 @@ wristTex.colorSpace = THREE.SRGBColorSpace;
 const wrist = new THREE.Mesh(new THREE.PlaneGeometry(0.2, 0.156), new THREE.MeshBasicMaterial({ map: wristTex, transparent: true, toneMapped: false }));
 wrist.position.set(0, 0.08, 0.03);
 wrist.rotation.x = -0.9;
-const ACTIONS = [
-  ['LOAD GUNS', loadGuns, () => !!armoury],
+let menuPage = 0;
+const MAIN_MENU = [
+  ['PROGRAMS', () => { menuPage = 1; }, () => !!(armoury || program)],
   ['LOAD AGENTS', loadAgents, () => props.some(p => p.kind === 'agent')],
   ['CODE VISION', toggleCode, () => codeMode],
   ['BULLET TIME', toggleBT, () => btOn],
   ['RESET', resetConstruct, () => false],
   ['EXIT VR', () => renderer.xr.getSession()?.end(), () => false],
 ];
+const PROGRAM_MENU = [
+  ['ARMOURY', () => loadProgram('armoury'), () => !!armoury],
+  ['LOBBY', () => loadProgram('lobby'), () => program?.key === 'lobby'],
+  ['JUMP', () => loadProgram('jump'), () => program?.key === 'jump'],
+  ['DOJO', () => loadProgram('dojo'), () => program?.key === 'dojo'],
+  ['RED DRESS', () => loadProgram('street'), () => program?.key === 'street'],
+  ['< BACK', () => { menuPage = 0; }, () => false],
+];
+const menuItems = () => (menuPage ? PROGRAM_MENU : MAIN_MENU);
 let menuHover = -1;
 const BTN = i => ({ x: 20 + (i % 2) * 246, y: 86 + Math.floor(i / 2) * 102, w: 226, h: 86 });
-const btnAt = (x, y) => ACTIONS.findIndex((_, i) => { const b = BTN(i); return x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h; });
+const btnAt = (x, y) => menuItems().findIndex((_, i) => { const b = BTN(i); return x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h; });
 function drawWrist() {
   const g = wristC.getContext('2d');
   g.clearRect(0, 0, 512, 400);
   g.fillStyle = 'rgba(0,8,3,0.88)'; g.fillRect(0, 0, 512, 400);
   g.strokeStyle = '#1d8a45'; g.lineWidth = 3; g.strokeRect(2, 2, 508, 396);
   g.fillStyle = '#3dff7a'; g.font = '30px "Share Tech Mono", monospace'; g.textBaseline = 'middle';
-  g.fillText('OPERATOR', 22, 42);
+  g.fillText(menuPage ? 'PROGRAMS' : 'OPERATOR', 22, 42);
   g.fillStyle = '#1d8a45'; g.font = '20px "Share Tech Mono", monospace'; g.textAlign = 'right';
   g.fillText(`${Math.round(fpsEma)} fps`, 490, 42); g.textAlign = 'left';
-  ACTIONS.forEach(([label, , on], i) => {
+  menuItems().forEach(([label, , on], i) => {
     const b = BTN(i), active = on();
     g.fillStyle = active ? '#3dff7a' : i === menuHover ? '#0f4a24' : '#06200f';
     g.fillRect(b.x, b.y, b.w, b.h);
@@ -1638,7 +2298,7 @@ function xrInput(dt) {
   const ax = (h, i) => { const a = h?.src.gamepad?.axes; if (!a) return 0; const v = a.length >= 4 ? a[i + 2] : a[i]; return Math.abs(v) < 0.15 ? 0 : v; };
   const f = viewYaw(), mx = ax(ctrl(L), 0), my = ax(ctrl(L), 1);
   moveVel.set(Math.cos(f) * mx + Math.sin(f) * my, 0, -Math.sin(f) * mx + Math.cos(f) * my).multiplyScalar(2.2);
-  rig.position.addScaledVector(moveVel, dt);
+  movePlayer(dt);
   const rx = ax(ctrl(R), 0);
   if (Math.abs(rx) > 0.7 && !turnLatch) { snapTurn(-Math.sign(rx) * Math.PI / 6); turnLatch = true; }
   if (Math.abs(rx) < 0.3) turnLatch = false;
@@ -1648,6 +2308,7 @@ function xrInput(dt) {
   if (ctrl(L)?.down[5]) { menuOpen = !menuOpen; wrist.visible = menuOpen; }
   if (ctrl(R)?.down[4]) toggleCode();
   if (ctrl(R)?.down[5]) loadGuns();
+  if (ctrl(L)?.down[3] || ctrl(R)?.down[3]) jump();
 
   for (const h of Object.values(hands)) if (h.mode === 'hand') trackedGestures(h);
 
@@ -1665,7 +2326,7 @@ function xrInput(dt) {
         const lp = wrist.worldToLocal(tip);
         const over = Math.abs(lp.x) < 0.1 && Math.abs(lp.y) < 0.078;
         if (over && lp.z < 0.03 && lp.z > -0.03) hv = btnAt((lp.x / 0.2 + 0.5) * 512, (0.5 - lp.y / 0.156) * 400);
-        if (over && lp.z < 0.006 && !R.poked && hv >= 0) { R.poked = true; ACTIONS[hv][1](); drawWrist(); }
+        if (over && lp.z < 0.006 && !R.poked && hv >= 0) { R.poked = true; menuItems()[hv][1](); drawWrist(); }
         if (!over || lp.z > 0.015) R.poked = false;
       }
     }
@@ -1694,7 +2355,7 @@ function xrInput(dt) {
 
     const trigDown = isCtrl ? h.down[0] : h.trigDown;
     const trigHeld = isCtrl ? !!h.src.gamepad?.buttons[0]?.pressed : h.trigHeld;
-    if (isCtrl && trigDown && side === 'right' && menuHover >= 0) { ACTIONS[menuHover][1](); drawWrist(); pulse('right', 0.5, 30); }
+    if (isCtrl && trigDown && side === 'right' && menuHover >= 0) { menuItems()[menuHover][1](); drawWrist(); pulse('right', 0.5, 30); }
     else if (h.held?.kind === 'gun' && (trigDown || (trigHeld && h.held.gun.auto))) fire(h.held);
     else if (trigDown && h.held?.kind === 'pill') takePill(h.held);
 
@@ -1761,15 +2422,18 @@ addEventListener('keydown', e => {
   if (e.code === 'KeyC' || e.code === 'Digit3') toggleCode();
   if (e.code === 'KeyT' || e.code === 'Digit4') toggleBT();
   if (e.code === 'KeyR') resetConstruct();
+  if (e.code === 'Space') jump();
+  const prog = { Digit5: 'lobby', Digit6: 'jump', Digit7: 'dojo', Digit8: 'street' }[e.code];
+  if (prog) loadProgram(prog);
   if (e.code === 'KeyF' && deskHeld?.kind === 'pill') takePill(deskHeld);
 });
 addEventListener('keyup', e => { keys[e.code] = false; });
 function deskInput(dt) {
   const f = P.yaw, mx = (keys.KeyD ? 1 : 0) - (keys.KeyA ? 1 : 0), my = (keys.KeyS ? 1 : 0) - (keys.KeyW ? 1 : 0);
-  const speed = (keys.ShiftLeft ? 5 : 2.4) * dt, n = Math.hypot(mx, my) || 1;
-  rig.position.x += (Math.cos(f) * mx + Math.sin(f) * my) / n * speed;
-  rig.position.z += (-Math.sin(f) * mx + Math.cos(f) * my) / n * speed;
+  const speed = keys.ShiftLeft ? 5 : 2.4, n = Math.hypot(mx, my) || 1;
+  moveVel.set(Math.cos(f) * mx + Math.sin(f) * my, 0, -Math.sin(f) * mx + Math.cos(f) * my).multiplyScalar(speed / n);
   rig.rotation.y = P.yaw;
+  movePlayer(dt);
   camera.rotation.set(P.pitch, 0, 0);
   rig.updateMatrixWorld(true);
   if (mouseHeld && deskHeld?.gun?.auto) fire(deskHeld);
@@ -1843,11 +2507,12 @@ function update(time) {
   timeScale += ((btOn ? 0.06 : 1) - timeScale) * Math.min(1, dt * 4);
   const sdt = dt * timeScale;
   codeTime.value = (codeTime.value + dt * (0.25 + 0.75 * timeScale)) % 900;
-  bgColor.copy(codeMode ? BLACK : WHITE).lerp(codeMode ? BT_BLACK : BT_WHITE, (1 - timeScale) * 0.9);
+  bgColor.copy(codeMode ? BLACK : baseBg).lerp(codeMode ? BT_BLACK : BT_WHITE, (1 - timeScale) * (program ? 0.2 : 0.9));
 
   if (xrOn) xrInput(dt); else deskInput(dt);
   for (const p of props) if (p.cool > 0) p.cool -= dt;
   updateArmoury(dt);
+  updateProgram(dt, sdt);
   updateSweep(dt);
   updateHeld(dt);
   physics.step(1 / 120, sdt, 8);
@@ -1857,15 +2522,16 @@ function update(time) {
     if (p.body.position.y < -5) { p.body.position.y = 2; p.body.velocity.setZero(); }
   }
   updateBullets(dt, sdt);
+  updateFX(dt, sdt);
   updatePills(dt);
   updateTV(dt);
 
   // keep the shadow box around the player
   headPos(_s);
-  sun.target.position.set(Math.round(_s.x * 2) / 2, 0, Math.round(_s.z * 2) / 2);
+  sun.target.position.set(Math.round(_s.x * 2) / 2, rig.position.y, Math.round(_s.z * 2) / 2);
   sun.position.copy(sun.target.position).add(new V3(3, 10, 4));
   codeFloor.position.set(_s.x, 0.001, _s.z);
-  rainWall.position.set(_s.x, 10, _s.z);
+  rainWall.position.set(_s.x, rig.position.y + 10, _s.z);
 
   if (fade) {
     fade.t += dt;
@@ -1903,7 +2569,7 @@ document.fonts?.ready.then(() => { drawWrist(); });
 drawWrist();
 refreshStatus();
 loadGunLibrary().catch(e => console.warn('gun models', e));
-window.construct = { reportError, get armoury() { return armoury; }, ctrlModels, skinMat, poseControllerHand, hands, posed, casings, scene, pick, raycaster, camera, bullets, renderer, takeSlot, liveInst, GUNS, loadGuns, loadAgents, setCode, toggleBT, resetConstruct, grab, release, fire, props, P, rig };
+window.construct = { keys, moveVel, jump, spawnGun, loadProgram, get program() { return program; }, player, reportError, get armoury() { return armoury; }, ctrlModels, skinMat, poseControllerHand, hands, posed, casings, scene, pick, raycaster, camera, bullets, renderer, takeSlot, liveInst, GUNS, loadGuns, loadAgents, setCode, toggleBT, resetConstruct, grab, release, fire, props, P, rig };
 </script>
 </body>
 </html>

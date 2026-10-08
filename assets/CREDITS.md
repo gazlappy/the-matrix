@@ -31,6 +31,14 @@ These come from [Poly Haven](https://polyhaven.com) at 1k resolution.
 | textures/leather_red_03_* | https://polyhaven.com/a/leather_red_03 |
 | textures/leather_red_02_nor_gl.jpg | https://polyhaven.com/a/leather_red_02 |
 | textures/black_walnut_veneer_01_* | https://polyhaven.com/a/black_walnut_veneer_01 |
+| textures/marble_01_* | https://polyhaven.com/a/marble_01 |
+| textures/hinoki_planks_* | https://polyhaven.com/a/hinoki_planks |
+| textures/japanese_cedar_planks_* | https://polyhaven.com/a/japanese_cedar_planks |
+| textures/asphalt_02_* | https://polyhaven.com/a/asphalt_02 |
+| textures/concrete_pavement_* | https://polyhaven.com/a/concrete_pavement |
+| textures/brick_wall_003_* | https://polyhaven.com/a/brick_wall_003 |
+| textures/concrete_floor_worn_001_* | https://polyhaven.com/a/concrete_floor_worn_001 |
+| textures/concrete_tile_facade_* | https://polyhaven.com/a/concrete_tile_facade |
 
 ## Hands: MIT
 
