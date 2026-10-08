@@ -1184,33 +1184,107 @@ function pointBone(bone, child, target) {
   bone.parent.getWorldQuaternion(_ip);
   bone.quaternion.copy(_ip.invert().multiply(_iq.multiply(_iw)));
 }
-// an Agent levelling a pistol at you: right arm straight out at your head, the gun along it
+// an Agent levelling a pistol at you: arm straight out at your head, wrist turned thumb-up, the pistol's grip in
+// his palm with the fingers wrapped round it and the index finger on the trigger
+const _fq = new THREE.Quaternion();
+const _m4a = new THREE.Matrix4(), _m4b = new THREE.Matrix4(), _sc = new V3();
+function turnBoneWorld(bone, q) {
+  // rotate a bone about its own joint by a world-space rotation, done with full matrices because the rig has
+  // mirrored, centimetre-scaled bones that a plain quaternion shortcut gets wrong
+  bone.updateWorldMatrix(true, false);
+  const p = _ia.setFromMatrixPosition(bone.matrixWorld);
+  _m4a.makeTranslation(p.x, p.y, p.z).multiply(_m4b.makeRotationFromQuaternion(q)).multiply(_m4b.makeTranslation(-p.x, -p.y, -p.z)).multiply(bone.matrixWorld);
+  _m4b.copy(bone.parent.matrixWorld).invert().multiply(_m4a).decompose(bone.position, bone.quaternion, _sc);
+  bone.updateWorldMatrix(false, true);
+}
+// a real fist, borrowed from motion capture of a man holding an umbrella (his left hand), copied to the right
+let fistPose = null;
+async function loadFist() {
+  if (fistPose) return fistPose;
+  const g = await gltfLoader.loadAsync('assets/people/anim/m_umbrella_idle_01.glb');
+  fistPose = {};
+  for (const t of g.animations[0].tracks) {
+    const m = t.name.match(/^Bip01_L_(Finger\d+)\.quaternion$/);
+    if (m) fistPose[m[1]] = new THREE.Quaternion().fromArray(t.values, 0);
+  }
+  return fistPose;
+}
 function aimAgent(prop, gunKey = 'deagle') {
   const h = prop.obj.userData.human;
   if (!h || !GUNS[gunKey]) return;
-  const o = h.obj;
-  const up = o.getObjectByName('Bip01_R_UpperArm'), fore = o.getObjectByName('Bip01_R_Forearm'), hand = o.getObjectByName('Bip01_R_Hand');
-  if (!up || !fore || !hand) return;
+  const o = h.obj, B = n => o.getObjectByName(`Bip01_R_${n}`);
+  const up = B('UpperArm'), fore = B('Forearm'), hand = B('Hand'), mid = B('Finger2'), thumb = B('Finger0');
+  if (!up || !fore || !hand || !mid || !thumb) return;
   const gun = makeGun(gunKey);
   gun.traverse(m => { if (m.isMesh) { m.castShadow = true; m.userData.mat = m.material; } });
   hand.add(gun);
-  // the skeleton is in centimetres: undo the hand's world scale so the gun is real size
   o.updateMatrixWorld(true);
-  const hs = hand.getWorldScale(new V3());
-  gun.scale.set(1 / hs.x, 1 / hs.y, 1 / hs.z);
+  const dir = new V3(), upv = new V3(), side = new V3(), palm = new V3(), t = new V3(), q = new THREE.Quaternion();
+  loadFist().catch(() => {});
   h.aim = target => {
     pointBone(up, fore, target);
     pointBone(fore, hand, target);
-    // the gun sits in the hand, barrel on the target (a gun's barrel is its -Z)
-    hand.updateWorldMatrix(true, false);
+    pointBone(hand, mid, target);
+    // roll the wrist about the aim line so the thumb is on top
     const at = hand.getWorldPosition(_ia);
-    // Matrix4.lookAt(eye, target) turns +Z away from the target, which puts the barrel (-Z) on it
-    const wq = new THREE.Quaternion().setFromRotationMatrix(_aimM.lookAt(at, target, UP));
-    gun.quaternion.copy(hand.getWorldQuaternion(_iw).invert().multiply(wq));
-    gun.position.set(0, 0, 0);
+    dir.copy(target).sub(at).normalize();
+    t.copy(thumb.getWorldPosition(_ib)).sub(at);
+    t.addScaledVector(dir, -t.dot(dir)).normalize();
+    upv.set(0, 1, 0).addScaledVector(dir, -dir.y).normalize();
+    let ang = Math.acos(clamp(t.dot(upv), -1, 1));
+    if (side.crossVectors(t, upv).dot(dir) < 0) ang = -ang;
+    turnBoneWorld(hand, q.setFromAxisAngle(dir, ang));
+    // close the hand into a fist round the grip
+    if (fistPose) for (const n in fistPose) { const b = B(n); if (b) b.quaternion.copy(fistPose[n]); }
+    hand.updateWorldMatrix(false, true);
+    // the grip goes through the middle of the fist; barrel on the target, slide on top
+    palm.set(0, 0, 0);
+    for (const n of ['Finger2', 'Finger21', 'Finger3', 'Finger31']) palm.add(B(n).getWorldPosition(_ib));
+    palm.multiplyScalar(0.25).addScaledVector(dir, -0.03);
+    _aimM.lookAt(palm, target, upv).setPosition(palm);
+    _m4a.copy(hand.matrixWorld).invert().multiply(_aimM).decompose(gun.position, gun.quaternion, gun.scale);
   };
 }
-
+// sunglasses fitted to the face: measured once per avatar from the head mesh in its rest pose (nose tip, head width)
+const faceFits = {};
+function faceFit(avatar) {
+  if (faceFits[avatar]) return faceFits[avatar];
+  const T = HUMAN_LIB.avatars[avatar];
+  T.updateMatrixWorld(true);
+  let head = null;
+  T.traverse(o => { if (o.isSkinnedMesh && /head/i.test(o.material?.map?.image?.src || '')) head = o; });
+  const p = new V3(), tip = new V3(0, 1.64, 0.14);
+  let best = -1, half = 0.075;
+  if (head) {
+    const n = head.geometry.attributes.position.count;
+    for (let i = 0; i < n; i++) { head.getVertexPosition(i, p); head.localToWorld(p); if (p.y > 1.45 && p.y < 1.85 && Math.abs(p.x) < 0.025 && p.z > best) { best = p.z; tip.copy(p); } }
+    half = 0;
+    for (let i = 0; i < n; i++) { head.getVertexPosition(i, p); head.localToWorld(p); if (Math.abs(p.y - (tip.y + 0.04)) < 0.015 && p.z > tip.z - 0.12) half = Math.max(half, Math.abs(p.x)); }
+  }
+  const bone = T.getObjectByName('Bip01_Head');
+  return (faceFits[avatar] = { tip: tip.clone(), half: half || 0.075, boneInv: bone.matrixWorld.clone().invert() });
+}
+function makeSunglasses(fit) {
+  const g = new THREE.Group();
+  const lensGeo = new RoundedBoxGeometry(0.052, 0.03, 0.006, 3, 0.009);
+  for (const s of [-1, 1]) {
+    const lens = new THREE.Mesh(lensGeo, M.shades);
+    lens.position.set(s * 0.032, 0, 0);
+    lens.rotation.y = s * 0.14;
+    g.add(lens);
+    // arms run back along the side of the head to the ears
+    const len = 0.088, ax = Math.min(fit.half, 0.07) + 0.003;
+    const arm = new THREE.Mesh(new THREE.BoxGeometry(0.003, 0.005, len), M.shades);
+    arm.position.set(s * ax, -0.002, -len / 2 - 0.004);
+    arm.rotation.set(-0.12, s * 0.04, 0);
+    g.add(arm);
+    const hinge = new THREE.Mesh(new THREE.BoxGeometry(Math.max(0.004, ax - 0.056), 0.006, 0.006), M.shades);
+    hinge.position.set(s * (0.058 + (ax - 0.058) / 2), 0.004, -0.002);
+    g.add(hinge);
+  }
+  g.add(new THREE.Mesh(new THREE.BoxGeometry(0.014, 0.004, 0.004), M.shades));
+  return g;
+}
 // an Agent: the black-suited businessman with sunglasses, standing idle; a physics prop that topples when shot
 function makeRealAgent(avatar = 'Business_Male_03', clip = 'm_idle_neutral_01', shades = true) {
   const h = makeHuman(avatar, clip, { speed: rand(0.9, 1.1) });
@@ -1218,25 +1292,13 @@ function makeRealAgent(avatar = 'Business_Male_03', clip = 'm_idle_neutral_01', 
   h.obj.position.y = -1.0;
   g.add(h.obj);
   if (shades) {
-    g.updateMatrixWorld(true);
     const head = h.obj.getObjectByName('Bip01_Head');
     if (head) {
-      // two dark lenses on a thin bridge
-      const glasses = new THREE.Group();
-      for (const s of [-1, 1]) {
-        const lens = new THREE.Mesh(new RoundedBoxGeometry(0.056, 0.034, 0.008, 2, 0.006), M.shades);
-        lens.position.set(s * 0.034, 0, 0);
-        lens.rotation.y = s * 0.12;
-        glasses.add(lens);
-        const arm = new THREE.Mesh(new THREE.BoxGeometry(0.004, 0.006, 0.1), M.shades);
-        arm.position.set(s * 0.068, 0.006, -0.05);
-        glasses.add(arm);
-      }
-      glasses.add(new THREE.Mesh(new THREE.BoxGeometry(0.016, 0.005, 0.005), M.shades));
-      // in front of the eyes (the avatar faces +Z), then hung off the head bone so they move with it
-      glasses.position.copy(g.worldToLocal(head.getWorldPosition(new V3()))).add(new V3(0, 0.098, 0.113));
-      g.add(glasses);
-      head.attach(glasses);
+      // seat them on the nose (lenses just in front of the eyes), fixed to the head bone using the rest pose
+      const fit = faceFit(avatar), glasses = makeSunglasses(fit);
+      const rest = new THREE.Matrix4().makeTranslation(0, fit.tip.y + 0.038, fit.tip.z - 0.016);
+      fit.boneInv.clone().multiply(rest).decompose(glasses.position, glasses.quaternion, glasses.scale);
+      head.add(glasses);
     }
   }
   g.userData.human = h;
