@@ -672,7 +672,7 @@ async function loadRecording(name, room, lowpass = 0) {
       chain = chain.connect(low).connect(harsh).connect(top);
       // and the thump: a short low punch under the crack
       const o = ctx.createOscillator(); o.frequency.setValueAtTime(body[1] * 1.6, 0); o.frequency.exponentialRampToValueAtTime(body[1] * 0.45, 0.14);
-      env(o.connect(filt('lowpass', 400)), 0.002, 0.55 * body[0], 0.06).connect(out); o.start(0); o.stop(0.6);
+      env(o.connect(filt('lowpass', 400)), 0.002, 0.35 * body[0], 0.06).connect(out); o.start(0); o.stop(0.6);
     }
     if (lowpass) chain = chain.connect(filt('lowpass', lowpass));
     chain.connect(out);

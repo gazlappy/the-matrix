@@ -82,7 +82,7 @@ The crowd's walks are baked at load time into vertex animation textures.
 | sounds/sniper.ogg | Tikka T3 .30-06, W_29P |
 | sounds/whoosh.ogg | swosh-40, slowed and given a reversed lead-in |
 
-The gunshots are from [The Free Firearm Sound Library](https://opengameart.org/content/the-free-firearm-sound-library) (Ben Jaszczak and team, CC0): one near-distance shot cut from each recording, mixed to mono, and saved as Ogg Vorbis. The whoosh is from [Swish - bamboo stick weapon swhoshes](https://opengameart.org/node/2242) by qubodup (CC0). The other sounds (casings, impacts, the freeze, clicks) are synthesised in code.
+The gunshots are from [The Free Firearm Sound Library](https://opengameart.org/content/the-free-firearm-sound-library) (Ben Jaszczak and team, CC0): one near-distance shot cut from one microphone channel of each recording (the two mics are out of phase, so mixing them hollows out the bang), and saved as Ogg Vorbis. The whoosh is from [Swish - bamboo stick weapon swhoshes](https://opengameart.org/node/2242) by qubodup (CC0). The other sounds (casings, impacts, the freeze, clicks) are synthesised in code.
 
 ## Hands: MIT
 
