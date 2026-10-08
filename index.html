@@ -596,7 +596,7 @@ function initAudio() {
   AC = new AudioContext();
   // a limiter at the end, so several shots at once get louder without breaking up
   const lim = AC.createDynamicsCompressor();
-  lim.threshold.value = -6; lim.knee.value = 4; lim.ratio.value = 12; lim.attack.value = 0.002; lim.release.value = 0.15;
+  lim.threshold.value = -1; lim.knee.value = 0; lim.ratio.value = 20; lim.attack.value = 0.001; lim.release.value = 0.1;
   lim.connect(AC.destination);
   master = AC.createGain(); master.gain.value = 0.8; master.connect(lim);
   buildSounds().catch(e => console.warn('sounds', e));
@@ -651,40 +651,24 @@ async function render(secs, build, { room = 0, roomSecs = 1.2, roomDecay = 5, br
   return buf;
 }
 // Real recordings (CC0, see assets/CREDITS.md): gunshots from The Free Firearm Sound Library, the whoosh from a
-// recorded swish. They're dry, close-up outdoor recordings, so each gets a little of the room added when it loads.
-const RECORDED = { pistol: 0.22, heavy: 0.25, revolver: 0.22, smg: 0.18, rifle: 0.2, sniper: 0.15, whoosh: 0.1 };
+// recorded swish. They play as recorded: processing them only made them sound less like the real thing.
+const RECORDED = ['pistol', 'heavy', 'revolver', 'smg', 'rifle', 'sniper', 'whoosh'];
 const SHOT_SOUND = { p226: 'pistol', p320: 'pistol', p228: 'pistol', glock19: 'pistol', deagle: 'heavy', revolver: 'revolver',
   mp5: 'smg', mpx: 'smg', mp5sd: 'smg_sd', mk14: 'rifle', mdr: 'rifle', m21: 'sniper', precision: 'sniper' };
-// how much weight each gunshot gets underneath: close-up recordings lose the chest thump you feel at the range
-const SHOT_BODY = { pistol: [1, 110], heavy: [1.4, 90], revolver: [1.1, 100], smg: [0.8, 120], rifle: [1.2, 95], sniper: [1.5, 80] };
-async function loadRecording(name, room, lowpass = 0) {
-  const data = await (await fetch(`assets/sounds/${name}.ogg`)).arrayBuffer();
-  const src = await AC.decodeAudioData(data);
-  const body = SHOT_BODY[name];
-  return render(src.duration + 0.6, ({ ctx, out, filt, env }) => {
+async function loadRecording(name, lowpass = 0) {
+  const src = await AC.decodeAudioData(await (await fetch(`assets/sounds/${name}.ogg`)).arrayBuffer());
+  if (!lowpass) return src;   // played exactly as recorded
+  return render(src.duration, ({ ctx, out, filt }) => {
     const n = ctx.createBufferSource(); n.buffer = src;
-    let chain = n;
-    if (body) {
-      // warm it up: more low end, less of the harsh top that makes small speakers sound tinny
-      const low = filt('lowshelf', 180); low.gain.value = 9;
-      const harsh = filt('peaking', 3800, 1.1); harsh.gain.value = -5;
-      const top = filt('highshelf', 7500); top.gain.value = -7;
-      chain = chain.connect(low).connect(harsh).connect(top);
-      // and the thump: a short low punch under the crack
-      const o = ctx.createOscillator(); o.frequency.setValueAtTime(body[1] * 1.6, 0); o.frequency.exponentialRampToValueAtTime(body[1] * 0.45, 0.14);
-      env(o.connect(filt('lowpass', 400)), 0.002, 0.35 * body[0], 0.06).connect(out); o.start(0); o.stop(0.6);
-    }
-    if (lowpass) chain = chain.connect(filt('lowpass', lowpass));
-    chain.connect(out);
-    n.start(0);
-  }, { room, roomSecs: 1, roomDecay: 5, bright: 0.4 });
+    n.connect(filt('lowpass', lowpass)).connect(out); n.start(0);
+  });
 }
 async function buildSounds() {
-  await Promise.all(Object.entries(RECORDED).map(async ([n, room]) => {
-    try { SFX[n] = await loadRecording(n, room); } catch (e) { console.warn('sound', n, e); }
+  await Promise.all(RECORDED.map(async n => {
+    try { SFX[n] = await loadRecording(n); } catch (e) { console.warn('sound', n, e); }
   }));
   // the suppressed MP5: the same SMG with the bang muffled
-  try { SFX.smg_sd = await loadRecording('smg', 0.12, 1400); } catch (e) { }
+  try { SFX.smg_sd = await loadRecording('smg', 1400); } catch (e) { }
   // a pistol: the supersonic crack, the muzzle blast, the low punch, the slide cycling, and the room answering
   SFX.shot = await render(1.4, ({ ctx, out, noise, filt, env }) => {
     const crack = noise(0.03); env(crack.connect(filt('highpass', 2500)), 0, 1.6, 0.004).connect(out); crack.start(0);
