@@ -40,6 +40,16 @@ These come from [Poly Haven](https://polyhaven.com) at 1k resolution.
 | textures/concrete_floor_worn_001_* | https://polyhaven.com/a/concrete_floor_worn_001 |
 | textures/concrete_tile_facade_* | https://polyhaven.com/a/concrete_tile_facade |
 
+## People: MIT
+
+The people in `people/` are from [Microsoft Rocketbox](https://github.com/microsoft/Microsoft-Rocketbox) (MIT License, Copyright (c) 2020 Microsoft). That covers 18 avatars from its Adults and Professions sets, plus walk and idle motion-capture animations.
+
+For use here, each one was:
+
+- converted from FBX to GLB in Blender, with the crowd meshes decimated to half the triangles
+- given textures scaled down to 1024 / 512 px JPG and PNG
+- in the case of Female_Party_01, recoloured red for the woman in the red dress
+
 ## Hands: MIT
 
 - **Hand model:** the generic hand from the [WebXR Input Profiles](https://github.com/immersive-web/webxr-input-profiles) assets (`@webxr-input-profiles/assets`), loaded from jsDelivr. MIT License.

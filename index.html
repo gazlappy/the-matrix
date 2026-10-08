@@ -102,6 +102,7 @@ import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFa
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 
 // dev only: index.html#emulate runs Meta's IWER Quest 3 emulator, so VR can be tested in a desktop browser
 if (location.hash.includes('emulate')) {
@@ -192,14 +193,21 @@ function makeGlyphAtlas() {
 const atlas = makeGlyphAtlas();
 const codeTime = { value: 0 };
 const CODE_VS = `
+#include <common>
+#include <skinning_pars_vertex>
 varying vec3 vW; varying vec3 vN;
 void main() {
+  vec3 transformed = vec3(position);
+  vec3 objectNormal = vec3(normal);
+  #include <skinbase_vertex>
+  #include <skinnormal_vertex>
+  #include <skinning_vertex>
   mat4 m = modelMatrix;
 #ifdef USE_INSTANCING
   m = modelMatrix * instanceMatrix;
 #endif
-  vec4 w = m * vec4(position, 1.0);
-  vW = w.xyz; vN = normalize(mat3(m) * normal);
+  vec4 w = m * vec4(transformed, 1.0);
+  vW = w.xyz; vN = normalize(mat3(m) * objectNormal);
   gl_Position = projectionMatrix * viewMatrix * w;
 }`;
 const CODE_FS = `
@@ -1047,14 +1055,12 @@ function restoreConstruct() {
   toast('Construct reloaded.');
 }
 
-function loadAgents() {
+async function loadAgents() {
+  await loadPeople().catch(() => {});
   for (const p of props.filter(p => p.kind === 'agent')) removeProp(p);
   const f = viewYaw(), head = headPos(new V3());
   for (const [x, z] of [[-1.6, -6], [0, -7.2], [1.6, -6]]) {
-    const o = makeAgent();
-    o.position.copy(new V3(x, 0, z).applyAxisAngle(UP, f).add(new V3(head.x, rig.position.y + 1.0, head.z)));
-    o.rotation.y = f;
-    addProp(o, { shapes: AGENT_SHAPES, mass: 75, kind: 'agent', name: 'Agent', cell: 0.04, matT: 1.4 });
+    spawnAgentProp(new V3(x, 0, z).applyAxisAngle(UP, f).add(new V3(head.x, rig.position.y + 1.0, head.z)), f, { matT: 1.4 });
   }
   play('whoosh', 0.7, 0.9);
   toast('Agents loaded.');
@@ -1070,6 +1076,117 @@ function resetConstruct() {
   if (armoury) unloadGuns();
   else if (program) unloadProgram();
   else if (restoreT <= 0) restoreConstruct();
+}
+
+// ---------------------------------------------------------------- people: Microsoft Rocketbox avatars (MIT)
+// Real rigged, textured humans with motion-captured walks and idles. The crowd uses lighter meshes; the woman in
+// red, the Agents and the guards are full detail. Distant people animate less often so a big crowd stays smooth.
+const PEOPLE = {
+  crowd: [['Business_Male_01', 'm'], ['Business_Male_02', 'm'], ['Business_Male_04', 'm'], ['Business_Male_05', 'm'], ['Business_Male_06', 'm'],
+    ['Business_Female_01', 'f'], ['Business_Female_02', 'f'], ['Business_Female_03', 'f'], ['Business_Female_04', 'f'],
+    ['Female_Adult_04', 'f'], ['Female_Adult_13', 'f'], ['Male_Adult_02', 'm'], ['Male_Adult_03', 'm'], ['Male_Adult_12', 'm']],
+  special: ['Business_Male_03', 'Female_Party_01', 'Security_Male_01', 'Security_Female_01'],
+  clips: ['m_walk_neutral_01', 'm_walk_neutral_02', 'm_walk_stroll_01', 'f_walk_neutral_01', 'f_walk_neutral_02', 'f_walk_self-assured', 'm_idle_neutral_01', 'f_idle_neutral_01'],
+};
+const HUMAN_LIB = { avatars: {}, clips: {} };
+// avatars that ship without a hair/eyelash alpha texture
+const NO_HAIR = new Set(['Business_Male_04', 'Business_Male_05', 'Business_Male_06', 'Male_Adult_12', 'Security_Female_01', 'Security_Male_01']);
+// keep only what a walk needs: every joint's rotation and the hips' movement (no end-bones, no scale)
+function trimClip(clip) {
+  clip.tracks = clip.tracks.filter(t => !t.name.includes('Nub') && (t.name.endsWith('.quaternion') || t.name === 'Bip01_Pelvis.position'));
+  return clip;
+}
+let peopleLib = null;
+function avatarMaterials(name, root) {
+  const tex = (file, srgb) => { const t = texLoader.load(`assets/people/${name}/${file}`); t.flipY = false; if (srgb) t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4; return t; };
+  const hero = name === 'Business_Male_03' || name === 'Female_Party_01';
+  root.traverse(o => {
+    if (!o.isMesh) return;
+    const n = (o.material?.name || '').toLowerCase();
+    if (n.includes('opacity')) {
+      if (NO_HAIR.has(name)) { o.visible = false; return; }
+      o.material = new THREE.MeshStandardMaterial({ map: tex('hair.png', true), alphaTest: 0.45, side: THREE.DoubleSide, roughness: 0.7 });
+    }
+    else if (n.includes('head')) o.material = new THREE.MeshStandardMaterial({ map: tex('head.jpg', true), normalMap: hero ? tex('head_n.jpg') : null, roughness: 0.62 });
+    else o.material = new THREE.MeshStandardMaterial({ map: tex('body.jpg', true), normalMap: hero ? tex('body_n.jpg') : null, roughness: 0.75 });
+    o.frustumCulled = false;
+  });
+}
+function loadPeople() {
+  if (peopleLib) return peopleLib;
+  const avatars = [...PEOPLE.crowd.map(c => c[0]), ...PEOPLE.special];
+  peopleLib = Promise.all([
+    ...avatars.map(n => gltfLoader.loadAsync(`assets/people/${n}.glb`).then(g => { avatarMaterials(n, g.scene); HUMAN_LIB.avatars[n] = g.scene; })),
+    ...PEOPLE.clips.map(c => gltfLoader.loadAsync(`assets/people/anim/${c}.glb`).then(g => { HUMAN_LIB.clips[c] = trimClip(g.animations[0]); })),
+  ]).then(() => HUMAN_LIB).catch(e => { peopleLib = null; throw e; });
+  return peopleLib;
+}
+// a living copy of an avatar playing a clip; registered so it gets animated
+const humans = new Set();
+let humanFrame = 0;
+function makeHuman(name, clip, { speed = 1, phase = Math.random() } = {}) {
+  const obj = SkeletonUtils.clone(HUMAN_LIB.avatars[name]);
+  const mixer = new THREE.AnimationMixer(obj);
+  const c = HUMAN_LIB.clips[clip];
+  const action = mixer.clipAction(c);
+  action.play();
+  action.time = phase * c.duration;
+  action.timeScale = speed;
+  mixer.update(0);
+  const h = { obj, mixer, action, acc: 0, k: humans.size % 4 };
+  humans.add(h);
+  return h;
+}
+const _hh = new V3(), _hp = new V3();
+function tickHumans(sdt) {
+  humanFrame++;
+  headPos(_hh);
+  for (const h of humans) {
+    if (!h.obj.parent) { humans.delete(h); continue; }
+    h.acc += sdt;
+    if (!h.obj.visible) continue;
+    const d = h.obj.getWorldPosition(_hp).distanceTo(_hh);
+    const every = d < 12 ? 1 : d < 30 ? 2 : 4;
+    if ((humanFrame + h.k) % every === 0) { h.mixer.update(h.acc); h.acc = 0; }
+  }
+}
+// an Agent: the black-suited businessman with sunglasses, standing idle; a physics prop that topples when shot
+function makeRealAgent(avatar = 'Business_Male_03', clip = 'm_idle_neutral_01', shades = true) {
+  const h = makeHuman(avatar, clip, { speed: rand(0.9, 1.1) });
+  const g = new THREE.Group();
+  h.obj.position.y = -1.0;
+  g.add(h.obj);
+  if (shades) {
+    g.updateMatrixWorld(true);
+    const head = h.obj.getObjectByName('Bip01_Head');
+    if (head) {
+      // two dark lenses on a thin bridge
+      const glasses = new THREE.Group();
+      for (const s of [-1, 1]) {
+        const lens = new THREE.Mesh(new RoundedBoxGeometry(0.056, 0.034, 0.008, 2, 0.006), M.shades);
+        lens.position.set(s * 0.034, 0, 0);
+        lens.rotation.y = s * 0.12;
+        glasses.add(lens);
+        const arm = new THREE.Mesh(new THREE.BoxGeometry(0.004, 0.006, 0.1), M.shades);
+        arm.position.set(s * 0.068, 0.006, -0.05);
+        glasses.add(arm);
+      }
+      glasses.add(new THREE.Mesh(new THREE.BoxGeometry(0.016, 0.005, 0.005), M.shades));
+      // in front of the eyes (the avatar faces +Z), then hung off the head bone so they move with it
+      glasses.position.copy(g.worldToLocal(head.getWorldPosition(new V3()))).add(new V3(0, 0.098, 0.113));
+      g.add(glasses);
+      head.attach(glasses);
+    }
+  }
+  g.userData.human = h;
+  return g;
+}
+// spawn an Agent (or a guard) as a physics prop; falls back to the simple figure if the people haven't loaded
+function spawnAgentProp(pos, yaw, { avatar = 'Business_Male_03', clip = 'm_idle_neutral_01', shades = true, name = 'Agent', matT = 0 } = {}) {
+  const o = HUMAN_LIB.avatars[avatar] ? makeRealAgent(avatar, clip, shades) : makeAgent();
+  o.position.copy(pos);
+  o.rotation.y = yaw;
+  return addProp(o, { shapes: AGENT_SHAPES, mass: 75, kind: 'agent', name, cell: 0.04, matT });
 }
 
 // ---------------------------------------------------------------- loading programs
@@ -1302,19 +1419,13 @@ function buildLobby(P) {
   }
   solid(P, tiledBox(4.6, 1.1, 0.9, 1.2), darkStone, 0, 0.55, -25, 2.3, 0.55, 0.45);
   put(P, tiledBox(4.8, 0.06, 1.1, 1.2), stone, 0, 1.13, -25);
-  // guards
-  const navy = new THREE.MeshStandardMaterial({ color: 0x1c2740, roughness: 0.6 });
-  for (const [x, z] of [[-2.6, -2.8], [2.6, -2.8], [-1.2, -24], [1.3, -24.1]]) {
-    const o = makeAgent();
-    o.traverse(m => { if (m.isMesh && m.material === M.suit) m.material = navy; if (m.isMesh && m.material === M.shades && m.position.y > 0.6) m.visible = false; });
-    const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.115, 0.115, 0.08, 16), navy);
-    cap.position.y = 0.83; o.add(cap);
-    const brim = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.012, 0.09), M.shades);
-    brim.position.set(0, 0.8, 0.12); o.add(brim);
-    o.position.copy(toWorldP(P, new V3(x, 1.0, z)));
-    o.rotation.y = P.yaw;
-    addProp(o, { shapes: AGENT_SHAPES, mass: 75, kind: 'agent', name: 'Guard', cell: 0.04, matT: 1.6 });
-  }
+  // security guards at the detectors and the desk
+  P.onReveal = () => loadPeople().catch(() => {}).then(() => {
+    if (program !== P) return;
+    [[-2.6, -2.8, 'Security_Male_01'], [2.6, -2.8, 'Security_Female_01'], [-1.2, -24, 'Security_Female_01'], [1.3, -24.1, 'Security_Male_01']].forEach(([x, z, avatar]) => {
+      spawnAgentProp(toWorldP(P, new V3(x, 1.0, z)), P.yaw, { avatar, clip: avatar.includes('Female') ? 'f_idle_neutral_01' : 'm_idle_neutral_01', shades: false, name: 'Guard', matT: 1.2 });
+    });
+  });
   // "Guns. Lots of guns." - a kit laid out on a bench at your feet
   const bench = new THREE.MeshStandardMaterial({ color: 0x2a2d31, roughness: 0.6, metalness: 0.3 });
   put(P, new THREE.BoxGeometry(2.4, 0.06, 0.7), bench, 1.6, 0.7, 0.6);
@@ -1515,51 +1626,60 @@ function buildStreet(P) {
     lampParts.push(xf(new THREE.BoxGeometry(0.4, 0.16, 0.24), s * 4.6, 4.5, z));
   }
   put(P, mergeGeometries(lampParts), new THREE.MeshStandardMaterial({ color: 0x23302a, metalness: 0.5, roughness: 0.5 }));
-  // the crowd walks both ways along both pavements
+  // a crowd of real people walking both ways along both pavements (a soft shadow under each)
   const walkers = [];
-  for (let i = 0; i < 26; i++) {
-    const side = i % 2 ? 1 : -1, dir = Math.random() < 0.5 ? 1 : -1;
-    const p = makePerson({ coat: COATS[i % COATS.length], pants: [0x1a1a1a, 0x2e3440, 0x3d3529][i % 3], skin: SKIN[i % SKIN.length], hair: [0x1a1410, 0x3b2a1a, 0x6b4a2a, 0x111111][i % 4] });
-    p.lane = side * rand(5.6, 8.4); p.z = rand(Z1, Z0); p.dir = dir; p.speed = rand(1.15, 1.5); p.phase = rand(0, 6);
-    P.group.add(p.obj);
-    walkers.push(p);
-  }
-  // the woman in the red dress walks towards you
-  const red = makePerson({ dress: 0xc8101e, skin: 0xf0cdb4, hair: 0xe6c27a, blonde: true });
-  red.lane = -6.3; red.z = -26; red.dir = 1; red.speed = 1.05; red.phase = 0; red.lady = true;
-  P.group.add(red.obj);
-  walkers.push(red);
+  let red = null, shadows = null;
+  const CROWD = 84;
+  P.onReveal = () => loadPeople().then(() => {
+    if (program !== P) return;
+    shadows = new THREE.InstancedMesh(new THREE.CircleGeometry(0.36, 16).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.28, alphaMap: blobTex, depthWrite: false }), CROWD + 1);
+    shadows.frustumCulled = false;
+    P.group.add(shadows);
+    for (let i = 0; i < CROWD; i++) {
+      const [avatar, sex] = PEOPLE.crowd[i % PEOPLE.crowd.length];
+      const clip = sex === 'm' ? ['m_walk_neutral_01', 'm_walk_neutral_02', 'm_walk_stroll_01'][i % 3] : ['f_walk_neutral_01', 'f_walk_neutral_02'][i % 2];
+      const speed = rand(1.15, 1.5);
+      const h = makeHuman(avatar, clip, { speed: speed / 1.3 });
+      const side = i % 2 ? 1 : -1;
+      const p = { h, obj: h.obj, lane: side * rand(5.5, 8.5), z: rand(Z1, Z0), dir: Math.random() < 0.5 ? 1 : -1, speed };
+      P.group.add(p.obj);
+      walkers.push(p);
+    }
+    // the woman in the red dress walks towards you
+    const h = makeHuman('Female_Party_01', 'f_walk_self-assured', { speed: 0.85, phase: 0 });
+    red = { h, obj: h.obj, lane: -6.3, z: -26, dir: 1, speed: 1.1 };
+    P.group.add(red.obj);
+    walkers.push(red);
+  }).catch(e => console.warn('people', e));
   let awayT = 0, turned = false;
-  const head = new V3(), fwd = new V3();
+  const head = new V3(), fwd = new V3(), _sm = new THREE.Matrix4();
   P.update = (dt, sdt) => {
     headPos(head);
     camera.getWorldDirection(fwd);
     const me = toLocalP(P, head.x, head.z);
-    for (const p of walkers) {
+    walkers.forEach((p, i) => {
       p.z += p.dir * p.speed * sdt;
       if (p.z > Z0) p.z = Z1 + 1; else if (p.z < Z1) p.z = Z0 - 1;
       // step round you
       const dx = p.lane - me.x, dz = p.z - me.z;
       p.dodge = (p.dodge || 0) + ((Math.hypot(dx, dz) < 1.1 ? Math.sign(dx || 1) * 0.7 : 0) - (p.dodge || 0)) * Math.min(1, sdt * 3);
-      p.phase += p.speed * sdt * 4.4;
-      const sw = Math.sin(p.phase) * 0.45;
-      p.legs[0].rotation.x = sw; p.legs[1].rotation.x = -sw;
-      p.obj.position.set(p.lane + p.dodge, 0.15 + Math.abs(Math.cos(p.phase)) * 0.025, p.z);
+      p.obj.position.set(p.lane + p.dodge, 0.15, p.z);
       p.obj.rotation.y = p.dir > 0 ? 0 : Math.PI;
-    }
+      // nobody past the fog needs drawing or animating
+      p.obj.visible = Math.abs(p.z - me.z) < 75;
+      shadows?.setMatrixAt(i, _sm.makeTranslation(p.lane + p.dodge, 0.158, p.z));
+    });
+    if (shadows) { shadows.count = walkers.length; shadows.instanceMatrix.needsUpdate = true; }
     // look away while she's close, and when you look back she's an Agent
-    if (!turned) {
+    if (red && !turned) {
       const w = red.obj.getWorldPosition(_v2), to = w.clone().sub(head), dist = to.length();
       const looking = to.normalize().dot(fwd) > 0.35;
       awayT = dist < 11 && !looking ? awayT + dt : 0;
       if (awayT > 0.7) {
         turned = true;
-        red.obj.visible = false;
+        red.obj.removeFromParent();
         walkers.splice(walkers.indexOf(red), 1);
-        const o = makeAgent();
-        o.position.set(w.x, rig.position.y + 1.15, w.z);
-        o.rotation.y = Math.atan2(head.x - w.x, head.z - w.z);
-        addProp(o, { shapes: AGENT_SHAPES, mass: 75, kind: 'agent', name: 'Agent', cell: 0.04 });
+        spawnAgentProp(new V3(w.x, rig.position.y + 1.0, w.z), Math.atan2(head.x - w.x, head.z - w.z));
         play('whoosh', 0.5, 0.9);
         toast('Look again.');
       }
@@ -1613,6 +1733,7 @@ function placeAt(P, local) {
 function revealProgram(P) {
   P.group.visible = true;
   if (P.kit) loadGunLibrary().then(() => { if (program === P) P.kit(); }).catch(() => {});
+  P.onReveal?.();
   applyEnv(P.env);
   if (P.spawn) placeAt(P, P.spawn);
   player.jumps = 0;
@@ -1898,6 +2019,7 @@ function spawnCasing(gp) {
 }
 function hitProp(p, point, dir) {
   if (p.hold) return;
+  if (p.obj.userData.human) p.obj.userData.human.action.paused = true;
   const j = clamp(p.body.mass * 3, 0.04, 50);
   p.body.wakeUp();
   p.body.applyImpulse(new CANNON.Vec3(dir.x * j, dir.y * j, dir.z * j), new CANNON.Vec3(point.x - p.body.position.x, point.y - p.body.position.y, point.z - p.body.position.z));
@@ -2513,6 +2635,7 @@ function update(time) {
   for (const p of props) if (p.cool > 0) p.cool -= dt;
   updateArmoury(dt);
   updateProgram(dt, sdt);
+  tickHumans(sdt);
   updateSweep(dt);
   updateHeld(dt);
   physics.step(1 / 120, sdt, 8);
@@ -2568,8 +2691,8 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden) AC?.
 document.fonts?.ready.then(() => { drawWrist(); });
 drawWrist();
 refreshStatus();
-loadGunLibrary().catch(e => console.warn('gun models', e));
-window.construct = { keys, moveVel, jump, spawnGun, loadProgram, get program() { return program; }, player, reportError, get armoury() { return armoury; }, ctrlModels, skinMat, poseControllerHand, hands, posed, casings, scene, pick, raycaster, camera, bullets, renderer, takeSlot, liveInst, GUNS, loadGuns, loadAgents, setCode, toggleBT, resetConstruct, grab, release, fire, props, P, rig };
+loadGunLibrary().catch(e => console.warn('gun models', e)).finally(() => loadPeople().catch(e => console.warn('people', e)));
+window.construct = { HUMAN_LIB, humans, makeHuman, loadPeople, keys, moveVel, jump, spawnGun, loadProgram, get program() { return program; }, player, reportError, get armoury() { return armoury; }, ctrlModels, skinMat, poseControllerHand, hands, posed, casings, scene, pick, raycaster, camera, bullets, renderer, takeSlot, liveInst, GUNS, loadGuns, loadAgents, setCode, toggleBT, resetConstruct, grab, release, fire, props, P, rig };
 </script>
 </body>
 </html>
