@@ -1209,6 +1209,8 @@ async function loadFist() {
   }
   return fistPose;
 }
+// where the gun's origin sits from the middle of the fist (along the aim, up, to his right), so the grip fills it
+const GRIP_IN_FIST = [-0.005, 0.012, -0.006];
 function aimAgent(prop, gunKey = 'deagle') {
   const h = prop.obj.userData.human;
   if (!h || !GUNS[gunKey]) return;
@@ -1240,7 +1242,8 @@ function aimAgent(prop, gunKey = 'deagle') {
     // the grip goes through the middle of the fist; barrel on the target, slide on top
     palm.set(0, 0, 0);
     for (const n of ['Finger2', 'Finger21', 'Finger3', 'Finger31']) palm.add(B(n).getWorldPosition(_ib));
-    palm.multiplyScalar(0.25).addScaledVector(dir, -0.03);
+    side.crossVectors(dir, upv).normalize();
+    palm.multiplyScalar(0.25).addScaledVector(dir, GRIP_IN_FIST[0]).addScaledVector(upv, GRIP_IN_FIST[1]).addScaledVector(side, GRIP_IN_FIST[2]);
     _aimM.lookAt(palm, target, upv).setPosition(palm);
     _m4a.copy(hand.matrixWorld).invert().multiply(_aimM).decompose(gun.position, gun.quaternion, gun.scale);
   };
@@ -1264,25 +1267,51 @@ function faceFit(avatar) {
   const bone = T.getObjectByName('Bip01_Head');
   return (faceFits[avatar] = { tip: tip.clone(), half: half || 0.075, boneInv: bone.matrixWorld.clone().invert() });
 }
+function roundRect(w, h, r) {
+  const sh = new THREE.Shape(), x = -w / 2, y = -h / 2;
+  sh.moveTo(x + r, y); sh.lineTo(x + w - r, y); sh.quadraticCurveTo(x + w, y, x + w, y + r);
+  sh.lineTo(x + w, y + h - r); sh.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  sh.lineTo(x + r, y + h); sh.quadraticCurveTo(x, y + h, x, y + h - r);
+  sh.lineTo(x, y + r); sh.quadraticCurveTo(x, y, x + r, y);
+  return sh;
+}
+// Agent shades: narrow rectangular lenses of glossy black glass in a thin gunmetal rim, wrapping slightly round the face
+let shadeMats = null;
 function makeSunglasses(fit) {
-  const g = new THREE.Group();
-  const lensGeo = new RoundedBoxGeometry(0.052, 0.03, 0.006, 3, 0.009);
+  shadeMats ??= {
+    glass: new THREE.MeshPhysicalMaterial({ color: 0x020202, metalness: 0.1, roughness: 0.04, clearcoat: 1, clearcoatRoughness: 0.02, envMapIntensity: 2.2 }),
+    rim: new THREE.MeshStandardMaterial({ color: 0x1a1b1d, metalness: 0.9, roughness: 0.3, envMapIntensity: 1.5 }),
+  };
+  const g = new THREE.Group(), LW = 0.05, LH = 0.024, R = 0.006, T = 0.0018;
+  const lensGeo = new THREE.ExtrudeGeometry(roundRect(LW, LH, R), { depth: 0.0012, bevelEnabled: false, curveSegments: 4 });
+  lensGeo.translate(0, 0, -0.0006);
+  const rimShape = roundRect(LW + T * 2, LH + T * 2, R + T);
+  rimShape.holes.push(roundRect(LW - 0.001, LH - 0.001, R - 0.0005));
+  const rimGeo = new THREE.ExtrudeGeometry(rimShape, { depth: 0.0022, bevelEnabled: false, curveSegments: 4 });
+  rimGeo.translate(0, 0, -0.0011);
+  const ax = Math.min(fit.half, 0.07) + 0.002, len = 0.112;
   for (const s of [-1, 1]) {
-    const lens = new THREE.Mesh(lensGeo, M.shades);
-    lens.position.set(s * 0.032, 0, 0);
-    lens.rotation.y = s * 0.14;
-    g.add(lens);
-    // arms run back along the side of the head to the ears
-    const len = 0.088, ax = Math.min(fit.half, 0.07) + 0.003;
-    const arm = new THREE.Mesh(new THREE.BoxGeometry(0.003, 0.005, len), M.shades);
-    arm.position.set(s * ax, -0.002, -len / 2 - 0.004);
-    arm.rotation.set(-0.12, s * 0.04, 0);
-    g.add(arm);
-    const hinge = new THREE.Mesh(new THREE.BoxGeometry(Math.max(0.004, ax - 0.056), 0.006, 0.006), M.shades);
-    hinge.position.set(s * (0.058 + (ax - 0.058) / 2), 0.004, -0.002);
+    const eye = new THREE.Group();
+    eye.position.set(s * 0.0325, 0, 0);
+    eye.rotation.y = s * 0.16;
+    eye.add(new THREE.Mesh(lensGeo, shadeMats.glass), new THREE.Mesh(rimGeo, shadeMats.rim));
+    g.add(eye);
+    // the hinge reaches from the lens's outer corner to the temple; the arm runs back above the ear
+    const outer = new V3(s * (LW / 2 + T), LH / 2 - 0.004, 0).applyEuler(eye.rotation).add(eye.position);
+    const hinge = new THREE.Mesh(new THREE.BoxGeometry(0.0025, 0.004, 1), shadeMats.rim);
+    const back = new V3(s * ax, outer.y, outer.z - 0.012);
+    hinge.scale.z = outer.distanceTo(back);
+    hinge.position.copy(outer).add(back).multiplyScalar(0.5);
+    hinge.lookAt(g.localToWorld(back.clone()));
     g.add(hinge);
+    const arm = new THREE.Mesh(new THREE.BoxGeometry(0.0022, 0.0035, len), shadeMats.rim);
+    arm.position.set(s * ax, back.y - Math.sin(0.14) * len / 2, back.z - len / 2);
+    arm.rotation.x = -0.14;
+    g.add(arm);
   }
-  g.add(new THREE.Mesh(new THREE.BoxGeometry(0.014, 0.004, 0.004), M.shades));
+  const bridge = new THREE.Mesh(new THREE.BoxGeometry(0.014, 0.0022, 0.0022), shadeMats.rim);
+  bridge.position.set(0, LH / 2 - 0.006, 0.001);
+  g.add(bridge);
   return g;
 }
 // an Agent: the black-suited businessman with sunglasses, standing idle; a physics prop that topples when shot
@@ -1296,7 +1325,7 @@ function makeRealAgent(avatar = 'Business_Male_03', clip = 'm_idle_neutral_01', 
     if (head) {
       // seat them on the nose (lenses just in front of the eyes), fixed to the head bone using the rest pose
       const fit = faceFit(avatar), glasses = makeSunglasses(fit);
-      const rest = new THREE.Matrix4().makeTranslation(0, fit.tip.y + 0.038, fit.tip.z - 0.016);
+      const rest = new THREE.Matrix4().makeTranslation(0, fit.tip.y + 0.035, fit.tip.z - 0.022);
       fit.boneInv.clone().multiply(rest).decompose(glasses.position, glasses.quaternion, glasses.scale);
       head.add(glasses);
     }
@@ -3132,12 +3161,28 @@ canvas.addEventListener('webglcontextrestored', () => {
 });
 $('reloadBtn').onclick = () => location.reload();
 // coming back to the headset: wake the audio up again
-document.addEventListener('visibilitychange', () => { if (!document.hidden) AC?.resume(); });
+document.addEventListener('visibilitychange', () => { if (!document.hidden) { AC?.resume(); checkForUpdate(); } });
+// the headset's browser keeps pages for a while, so a fresh push could go unseen: ask the server for the page,
+// and if it has changed since this copy was loaded, reload into it (never mid-session in the headset)
+let pageText = null;
+async function checkForUpdate() {
+  if (xrOn || location.protocol === 'file:') return;
+  try {
+    const url = location.href.split('#')[0];
+    pageText ??= await (await fetch(url, { cache: 'force-cache' })).text();
+    const fresh = await (await fetch(url, { cache: 'no-cache' })).text();
+    if (fresh === pageText || program || armoury) return;
+    if (Date.now() - (+sessionStorage.getItem('reloadedAt') || 0) < 60000) return;
+    sessionStorage.setItem('reloadedAt', Date.now());
+    location.reload();
+  } catch (e) { }
+}
+setTimeout(checkForUpdate, 4000);
 document.fonts?.ready.then(() => { drawWrist(); });
 drawWrist();
 refreshStatus();
 loadGunLibrary().catch(e => console.warn('gun models', e)).finally(() => loadPeople().catch(e => console.warn('people', e)));
-window.construct = { get worldFrozen() { return worldFrozen; }, aimAgent, loadCars, loadCrowdLib, vatTime, HUMAN_LIB, humans, makeHuman, loadPeople, keys, moveVel, jump, spawnGun, loadProgram, get program() { return program; }, player, reportError, get armoury() { return armoury; }, ctrlModels, skinMat, poseControllerHand, hands, posed, casings, scene, pick, raycaster, camera, bullets, renderer, takeSlot, liveInst, GUNS, loadGuns, loadAgents, setCode, toggleBT, resetConstruct, grab, release, fire, props, P, rig };
+window.construct = { GRIP_IN_FIST, get worldFrozen() { return worldFrozen; }, aimAgent, loadCars, loadCrowdLib, vatTime, HUMAN_LIB, humans, makeHuman, loadPeople, keys, moveVel, jump, spawnGun, loadProgram, get program() { return program; }, player, reportError, get armoury() { return armoury; }, ctrlModels, skinMat, poseControllerHand, hands, posed, casings, scene, pick, raycaster, camera, bullets, renderer, takeSlot, liveInst, GUNS, loadGuns, loadAgents, setCode, toggleBT, resetConstruct, grab, release, fire, props, P, rig };
 </script>
 </body>
 </html>
