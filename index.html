@@ -2490,7 +2490,7 @@ function grab(p, by, near) {
     if (by === 'cam') offset.setPosition(...(p.gun.long ? [0.2, -0.25, -0.46] : [0.2, -0.19, -0.48]));
   } else if (by === 'cam') offset.setPosition(0, -0.12, -(0.45 + p.radius));
   else if (!near) offset.setPosition(0, 0, -(p.radius * 0.7 + 0.03));
-  p.hold = { by, offset, t: near && p.kind !== 'gun' ? 1 : 0, dur: near ? 0.08 : 0.28, fromP: p.obj.position.clone(), fromQ: p.obj.quaternion.clone(), recoil: 0 };
+  p.hold = { by, offset, t: near && p.kind !== 'gun' ? 1 : 0, dur: near ? 0.08 : 0.28, fromP: p.obj.position.clone(), fromQ: p.obj.quaternion.clone() };
   p.hist.length = 0;
   if (by === 'cam') deskHeld = p; else hands[by].held = p;
   play('tick', 1, 0.6);
@@ -2529,7 +2529,7 @@ function updateHeld(dt) {
     const h = p.hold;
     if (!h) continue;
     holderMatrix(h.by, p, _m1).multiply(h.offset);
-    if (h.recoil > 0) { _m1.multiply(_m2.makeRotationX(h.recoil * 0.35)); h.recoil = Math.max(0, h.recoil - dt * 9); }
+    if (h.kick) applyRecoil(h, dt, _m1);
     _m1.decompose(_tp, _tq, _ts);
     if (h.t < 1) {
       h.t = Math.min(1, h.t + dt / h.dur);
@@ -2598,9 +2598,34 @@ function fire(p) {
   spawnFlash(muzzle.clone().addScaledVector(dir, 0.02), p.gun.long ? 0.16 : 0.12, 0.05);
   spawnRipple(muzzle, dir, 3, 0.6);
   spawnCasing(p);
-  if (p.hold) p.hold.recoil = p.gun.auto ? 0.5 : 1;
+  if (p.hold) kickRecoil(p);
   play('shot', (0.3 + 0.7 * timeScale) * rand(0.95, 1.05) * (p.gun.kind === 'smg' ? 1.15 : p.gun.kind === 'rifle' ? 0.85 : 1), p.gun.kind === 'smg' ? 0.6 : 0.85);
   pulse(p.hold?.by, 0.6, 40);
+}
+// Recoil: each shot kicks the gun back into your hand and flips the muzzle up, then it springs back. It's a damped
+// spring, so fast fire stacks up into muzzle climb. Heavy calibres kick harder; long guns push back more than they flip.
+const RECOIL = {
+  pistol: { flip: 0.2, back: 0.035, roll: 0.05 }, deagle: { flip: 0.42, back: 0.05, roll: 0.08 }, revolver: { flip: 0.34, back: 0.045, roll: 0.06 },
+  smg: { flip: 0.07, back: 0.018, roll: 0.03 }, rifle: { flip: 0.1, back: 0.045, roll: 0.03 }, precision: { flip: 0.16, back: 0.07, roll: 0.03 },
+};
+function kickRecoil(p) {
+  const h = p.hold, k = p.gun.key in RECOIL ? p.gun.key : p.gun.kind;
+  h.kick ??= { s: 0, v: 0, roll: 0, cfg: RECOIL[k] || RECOIL.pistol };
+  h.kick.v += 34;
+  h.kick.roll = rand(-1, 1);
+}
+function applyRecoil(h, dt, m) {
+  const k = h.kick, c = k.cfg;
+  for (let t = 0; t < dt; t += 0.004) {
+    const st = Math.min(0.004, dt - t);
+    k.v += (-560 * k.s - 30 * k.v) * st;
+    k.s += k.v * st;
+  }
+  if (Math.abs(k.s) < 1e-4 && Math.abs(k.v) < 1e-3) { k.s = k.v = 0; return; }
+  // pivot about the grip (the hold's origin): back along the barrel, muzzle up, a little twist
+  m.multiply(_m2.makeTranslation(0, k.s * c.back * 0.25, k.s * c.back))
+    .multiply(_m2.makeRotationX(k.s * c.flip))
+    .multiply(_m2.makeRotationZ(k.s * c.roll * k.roll));
 }
 // spent brass: a real physics object that bounces, rings and can be picked up; the newest 80 stay
 const MAX_CASINGS = 80;
