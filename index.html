@@ -655,14 +655,29 @@ async function render(secs, build, { room = 0, roomSecs = 1.2, roomDecay = 5, br
 const RECORDED = { pistol: 0.22, heavy: 0.25, revolver: 0.22, smg: 0.18, rifle: 0.2, sniper: 0.15, whoosh: 0.1 };
 const SHOT_SOUND = { p226: 'pistol', p320: 'pistol', p228: 'pistol', glock19: 'pistol', deagle: 'heavy', revolver: 'revolver',
   mp5: 'smg', mpx: 'smg', mp5sd: 'smg_sd', mk14: 'rifle', mdr: 'rifle', m21: 'sniper', precision: 'sniper' };
+// how much weight each gunshot gets underneath: close-up recordings lose the chest thump you feel at the range
+const SHOT_BODY = { pistol: [1, 110], heavy: [1.4, 90], revolver: [1.1, 100], smg: [0.8, 120], rifle: [1.2, 95], sniper: [1.5, 80] };
 async function loadRecording(name, room, lowpass = 0) {
   const data = await (await fetch(`assets/sounds/${name}.ogg`)).arrayBuffer();
   const src = await AC.decodeAudioData(data);
-  return render(src.duration + 0.6, ({ ctx, out, filt }) => {
+  const body = SHOT_BODY[name];
+  return render(src.duration + 0.6, ({ ctx, out, filt, env }) => {
     const n = ctx.createBufferSource(); n.buffer = src;
-    if (lowpass) n.connect(filt('lowpass', lowpass)).connect(out); else n.connect(out);
+    let chain = n;
+    if (body) {
+      // warm it up: more low end, less of the harsh top that makes small speakers sound tinny
+      const low = filt('lowshelf', 180); low.gain.value = 9;
+      const harsh = filt('peaking', 3800, 1.1); harsh.gain.value = -5;
+      const top = filt('highshelf', 7500); top.gain.value = -7;
+      chain = chain.connect(low).connect(harsh).connect(top);
+      // and the thump: a short low punch under the crack
+      const o = ctx.createOscillator(); o.frequency.setValueAtTime(body[1] * 1.6, 0); o.frequency.exponentialRampToValueAtTime(body[1] * 0.45, 0.14);
+      env(o.connect(filt('lowpass', 400)), 0.002, 0.55 * body[0], 0.06).connect(out); o.start(0); o.stop(0.6);
+    }
+    if (lowpass) chain = chain.connect(filt('lowpass', lowpass));
+    chain.connect(out);
     n.start(0);
-  }, { room, roomSecs: 1, roomDecay: 5, bright: 0.6 });
+  }, { room, roomSecs: 1, roomDecay: 5, bright: 0.4 });
 }
 async function buildSounds() {
   await Promise.all(Object.entries(RECORDED).map(async ([n, room]) => {
