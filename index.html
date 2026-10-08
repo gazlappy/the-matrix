@@ -1134,9 +1134,13 @@ function avatarMaterials(name, root) {
 function loadPeople() {
   if (peopleLib) return peopleLib;
   const avatars = [...PEOPLE.crowd.map(c => c[0]), ...PEOPLE.special];
+  // a download can fail now and then (the host hiccups): try again, and one missing crowd member doesn't stop the rest
+  const get = (url, tries = 3) => gltfLoader.loadAsync(url).catch(e => tries > 1 ? new Promise(r => setTimeout(r, 800)).then(() => get(url, tries - 1)) : Promise.reject(e));
+  const crowdNames = new Set(PEOPLE.crowd.map(c => c[0]));
   peopleLib = Promise.all([
-    ...avatars.map(n => gltfLoader.loadAsync(`assets/people/${n}.glb`).then(g => { avatarMaterials(n, g.scene); HUMAN_LIB.avatars[n] = g.scene; })),
-    ...PEOPLE.clips.map(c => gltfLoader.loadAsync(`assets/people/anim/${c}.glb`).then(g => { HUMAN_LIB.clips[c] = trimClip(g.animations[0]); })),
+    ...avatars.map(n => get(`assets/people/${n}.glb`).then(g => { avatarMaterials(n, g.scene); HUMAN_LIB.avatars[n] = g.scene; })
+      .catch(e => { if (!crowdNames.has(n)) throw e; console.warn('avatar', n, e); })),
+    ...PEOPLE.clips.map(c => get(`assets/people/anim/${c}.glb`).then(g => { HUMAN_LIB.clips[c] = trimClip(g.animations[0]); })),
   ]).then(() => HUMAN_LIB).catch(e => { peopleLib = null; throw e; });
   return peopleLib;
 }
@@ -1455,12 +1459,14 @@ function loadCrowdLib() {
     await loadPeople();
     const types = [];
     for (const [name, sex] of PEOPLE.crowd) {
+      if (!HUMAN_LIB.avatars[name]) continue;
       const clip = HUMAN_LIB.clips[sex === 'm' ? (types.length % 2 ? 'm_walk_neutral_02' : 'm_walk_neutral_01') : 'f_walk_neutral_01'];
-      const far = await gltfLoader.loadAsync(`assets/people/${name}_far.glb`);
+      const far = await gltfLoader.loadAsync(`assets/people/${name}_far.glb`).catch(() => gltfLoader.loadAsync(`assets/people/${name}_far.glb`));
       avatarMaterials(name, far.scene);
       types.push({ name, lods: [bakeVAT(HUMAN_LIB.avatars[name], clip), bakeVAT(far.scene, clip)], duration: clip.duration });
       // spread the baking over frames so nothing stalls
-      await new Promise(r => requestAnimationFrame(r));
+      // (not requestAnimationFrame: the headset doesn't run it while you're in VR)
+      await new Promise(r => setTimeout(r, 0));
     }
     return types;
   })().catch(e => { crowdLib = null; throw e; });
